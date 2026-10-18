@@ -56,6 +56,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # 這個 job 沒有 checkout，gh 會靠 GH_REPO 知道要對哪個倉庫操作
+      # （沒有的話 gh 會去跑 git，然後因為「not a git repository」而失敗）
+      GH_REPO: ${{ github.repository }}
     steps:
       - name: 取回打包好的 exe
         uses: actions/download-artifact@v4
@@ -65,7 +70,6 @@ jobs:
 
       - name: 產生變更紀錄
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           set +e
@@ -79,7 +83,6 @@ jobs:
 
       - name: 發佈 Release
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           {
@@ -107,6 +110,5 @@ jobs:
 
       - name: 顯示結果
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ inputs.tag || github.ref_name }}
         run: gh release view "$TAG"

@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Win-NetMon Light BG variant — 淺色背景專用 -->
+<svg width="512" height="512" viewBox="0 0 192 192" xmlns="http://www.w3.org/2000/svg" role="img">
+  <title>Win-NetMon Light</title>
+  <defs>
+    <linearGradient id="bgLight" x1="12" y1="12" x2="168" y2="168" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#f8fafc"/><stop offset="100%" stop-color="#e2e8f0"/>
+    </linearGradient>
+    <linearGradient id="shieldGradL" x1="136" y1="118" x2="136" y2="170"><stop offset="0%" stop-color="#ffffff"/><stop offset="100%" stop-color="#e2e8f0"/></linearGradient>
+  </defs>
+  <rect x="12" y="14" width="168" height="168" rx="36" ry="36" fill="#000000" opacity="0.12"/>
+  <rect x="12" y="12" width="168" height="168" rx="36" ry="36" fill="url(#bgLight)" stroke="#cbd5e1" stroke-width="1.6"/>
+  <rect x="14" y="12" width="164" height="3" rx="1.5" fill="#6c8cff"/>
+  <circle cx="96" cy="88" r="38" fill="#6c8cff" fill-opacity="0.08" stroke="#6c8cff" stroke-width="3"/>
+  <ellipse cx="96" cy="88" rx="18" ry="36" fill="none" stroke="#6c8cff" stroke-width="1.6"/>
+  <ellipse cx="96" cy="88" rx="36" ry="18" fill="none" stroke="#6c8cff" stroke-width="1.6" opacity="0.35"/>
+  <circle cx="96" cy="58" r="4.2" fill="#6c8cff" stroke="#ffffff" stroke-width="1.2"/>
+  <circle cx="70" cy="102" r="3.8" fill="#4cc2ff" stroke="#ffffff" stroke-width="1"/>
+  <circle cx="122" cy="102" r="3.8" fill="#ff9e64" stroke="#ffffff" stroke-width="1"/>
+  <circle cx="96" cy="88" r="3.2" fill="#6c8cff"/>
+  <g stroke-linecap="round" opacity="0.35"><line x1="96" y1="62" x2="70" y2="99" stroke="#6c8cff" stroke-width="1.1" stroke-dasharray="3 3"/><line x1="96" y1="62" x2="122" y2="99" stroke="#6c8cff" stroke-width="1.1" stroke-dasharray="3 3"/></g>
+  <!-- 盾牌 -->
+  <path d="M 136 120 L 156 120 L 159.5 125.5 L 147.5 165 L 136 150.5 L 124.5 125.5 Z" fill="url(#shieldGradL)" stroke="#e53e3e" stroke-width="2.2" stroke-linejoin="round"/>
+  <rect x="138.5" y="137.5" width="15" height="11" rx="2" fill="#e53e3e" stroke="#ffffff" stroke-width="1"/>
+  <circle cx="159" cy="122" r="5.5" fill="#fef2f2" stroke="#22c55e" stroke-width="1.5"/><path d="M 156.2 122 L 158.2 124 L 161.8 120" fill="none" stroke="#22c55e" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

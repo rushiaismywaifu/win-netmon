@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Win-NetMon 簡化版 Icon — 適用 16~32px 小尺寸 -->
+<svg width="512" height="512" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img">
+  <title>Win-NetMon</title>
+  <defs>
+    <linearGradient id="g" x1="8" y1="8" x2="56" y2="56" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#141a33"/><stop offset="100%" stop-color="#0a0e1e"/>
+    </linearGradient>
+  </defs>
+  <rect x="6" y="6" width="52" height="52" rx="12" ry="12" fill="url(#g)" stroke="#2e365a" stroke-width="1.2"/>
+  <rect x="8" y="6" width="48" height="1.2" rx="0.6" fill="#6c8cff" opacity="0.95"/>
+  <!-- 地球簡化 -->
+  <circle cx="32" cy="28" r="12" fill="none" stroke="#6c8cff" stroke-width="1.8"/>
+  <ellipse cx="32" cy="28" rx="5.5" ry="12" fill="none" stroke="#6c8cff" stroke-width="0.9" opacity="0.9"/>
+  <ellipse cx="32" cy="28" rx="12" ry="5.5" fill="none" stroke="#6c8cff" stroke-width="0.9" opacity="0.4"/>
+  <circle cx="32" cy="18.5" r="1.6" fill="#6c8cff" stroke="#fff" stroke-width="0.6"/>
+  <circle cx="24.5" cy="32.5" r="1.2" fill="#4cc2ff"/>
+  <circle cx="39.5" cy="32.5" r="1.2" fill="#ff9e64"/>
+  <circle cx="32" cy="28" r="1" fill="#fff"/>
+  <!-- 盾牌 -->
+  <path d="M 44 40 L 50 40 L 51 42 L 47 51 L 44 47 L 42 42 Z" fill="#232842" stroke="#ff6b81" stroke-width="0.9" stroke-linejoin="round"/>
+  <rect x="45.2" y="44.5" width="3.6" height="2.8" rx="0.7" fill="#ff6b81"/>
+  <circle cx="52" cy="40.5" r="2.2" fill="#1a3a2a" stroke="#7ed67e" stroke-width="0.7"/>
+  <path d="M 50.8 40.5 L 51.6 41.3 L 53.2 39.7" fill="none" stroke="#7ed67e" stroke-width="0.6" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

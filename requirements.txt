@@ -1,0 +1,5 @@
+# Win-NetMon 執行需求
+# GUI 使用 Python 內建 tkinter（Windows 官方安裝檔內建），不需另外安裝。
+# 另外必須安裝 Npcap：https://npcap.com（安裝時勾選 "Install Npcap in WinPcap API-compatible Mode"）
+psutil>=5.9
+scapy>=2.5

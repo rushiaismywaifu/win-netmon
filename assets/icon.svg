@@ -1,0 +1,145 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Win-NetMon App Icon — 層級 1~5 概念：全域網路 + 即時速率 + 防護盾 -->
+<!-- Palette: BG #0d111f / HEADER #0a0e1e / ACCENT #6c8cff / DOWN #4cc2ff / UP #ff9e64 / GREEN #7ed67e / RED #ff6b81 -->
+<svg width="512" height="512" viewBox="0 0 192 192" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Win-NetMon — Windows 網路流量監測</title>
+  <desc id="desc">圓角方形深色底，中央藍色地球經緯線，左右上/下行速率箭頭，右下角盾牌象徵封鎖管制。</desc>
+  <defs>
+    <!-- 背景漸層：深空藍黑 -->
+    <linearGradient id="bgGrad" x1="12" y1="12" x2="168" y2="168" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#141a33"/>
+      <stop offset="55%" stop-color="#0a0e1e"/>
+      <stop offset="100%" stop-color="#0d111f"/>
+    </linearGradient>
+    <!-- 頂光 -->
+    <linearGradient id="topLight" x1="96" y1="12" x2="96" y2="56" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.14"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <!-- 地球光暈 -->
+    <radialGradient id="earthGlow" cx="96" cy="88" r="52" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#6c8cff" stop-opacity="0.22"/>
+      <stop offset="65%" stop-color="#6c8cff" stop-opacity="0.06"/>
+      <stop offset="100%" stop-color="#6c8cff" stop-opacity="0"/>
+    </radialGradient>
+    <!-- 盾牌漸層 -->
+    <linearGradient id="shieldGrad" x1="136" y1="118" x2="136" y2="170" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#232842"/>
+      <stop offset="100%" stop-color="#0a0e1e"/>
+    </linearGradient>
+    <!-- 箭頭漸層 -->
+    <linearGradient id="downGrad" x1="0" y1="0" x2="0" y2="1" gradientUnits="objectBoundingBox">
+      <stop offset="0%" stop-color="#4cc2ff"/>
+      <stop offset="100%" stop-color="#2a8fcf"/>
+    </linearGradient>
+    <linearGradient id="upGrad" x1="0" y1="0" x2="0" y2="1" gradientUnits="objectBoundingBox">
+      <stop offset="0%" stop-color="#ff9e64"/>
+      <stop offset="100%" stop-color="#c96a2e"/>
+    </linearGradient>
+    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#000000" flood-opacity="0.45"/>
+    </filter>
+    <filter id="innerGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="0" stdDeviation="3" flood-color="#6c8cff" flood-opacity="0.5"/>
+    </filter>
+    <clipPath id="squircleClip">
+      <rect x="12" y="12" width="168" height="168" rx="36" ry="36"/>
+    </clipPath>
+  </defs>
+
+  <!-- 陰影底 -->
+  <rect x="12" y="14" width="168" height="168" rx="36" ry="36" fill="#070a14" opacity="0.85"/>
+
+  <!-- 主背景方塊 -->
+  <rect x="12" y="12" width="168" height="168" rx="36" ry="36" fill="url(#bgGrad)" stroke="#2e365a" stroke-width="2" />
+
+  <!-- 頂部高光 -->
+  <rect x="12" y="12" width="168" height="44" rx="36" ry="36" fill="url(#topLight)" clip-path="url(#squircleClip)" opacity="0.9"/>
+  <!-- 頂部 2px 品牌線 -->
+  <rect x="14" y="12" width="164" height="3" rx="1.5" fill="#6c8cff" opacity="0.95"/>
+
+  <!-- 地球光暈 -->
+  <circle cx="96" cy="88" r="52" fill="url(#earthGlow)"/>
+
+  <!-- === 中央地球網格 === -->
+  <g id="globe" filter="url(#innerGlow)">
+    <!-- 外圈 -->
+    <circle cx="96" cy="88" r="38" fill="#6c8cff" fill-opacity="0.10" stroke="#6c8cff" stroke-width="3" stroke-linecap="round"/>
+    <!-- 經緯線 -->
+    <ellipse cx="96" cy="88" rx="18" ry="36" fill="none" stroke="#6c8cff" stroke-width="1.6" opacity="0.95"/>
+    <ellipse cx="96" cy="88" rx="36" ry="18" fill="none" stroke="#6c8cff" stroke-width="1.6" opacity="0.45"/>
+    <!-- 斜向經線（增加立體） -->
+    <path d="M 68 62 Q 96 88 124 114" fill="none" stroke="#6c8cff" stroke-width="1.2" opacity="0.35" stroke-linecap="round"/>
+    <path d="M 124 62 Q 96 88 68 114" fill="none" stroke="#6c8cff" stroke-width="1.2" opacity="0.35" stroke-linecap="round"/>
+    <!-- 橫向緯線 -->
+    <path d="M 62 88 H 130" fill="none" stroke="#6c8cff" stroke-width="1.0" opacity="0.30" stroke-linecap="round"/>
+    <path d="M 66 72 Q 96 68 126 72" fill="none" stroke="#6c8cff" stroke-width="1.0" opacity="0.25" stroke-dasharray="2 3" stroke-linecap="round"/>
+    <path d="M 66 104 Q 96 108 126 104" fill="none" stroke="#6c8cff" stroke-width="1.0" opacity="0.25" stroke-dasharray="2 3" stroke-linecap="round"/>
+  </g>
+
+  <!-- 網路節點（脈動點） -->
+  <g id="nodes">
+    <circle cx="96" cy="58" r="4.2" fill="#6c8cff" stroke="#ffffff" stroke-width="1.2" />
+    <circle cx="96" cy="58" r="7" fill="none" stroke="#6c8cff" stroke-width="1" opacity="0.35"/>
+    <circle cx="70" cy="102" r="3.8" fill="#4cc2ff" stroke="#0d111f" stroke-width="1.1"/>
+    <circle cx="122" cy="102" r="3.8" fill="#ff9e64" stroke="#0d111f" stroke-width="1.1"/>
+    <circle cx="96" cy="88" r="3.2" fill="#ffffff" stroke="#6c8cff" stroke-width="1.4"/>
+    <!-- 連線 -->
+    <g stroke-linecap="round" opacity="0.45">
+      <line x1="96" y1="62" x2="70" y2="99" stroke="#6c8cff" stroke-width="1.1" stroke-dasharray="3 3"/>
+      <line x1="96" y1="62" x2="122" y2="99" stroke="#6c8cff" stroke-width="1.1" stroke-dasharray="3 3"/>
+      <line x1="70" y1="102" x2="96" y2="88" stroke="#4cc2ff" stroke-width="1"/>
+      <line x1="122" y1="102" x2="96" y2="88" stroke="#ff9e64" stroke-width="1"/>
+    </g>
+  </g>
+
+  <!-- === 左：下載箭頭（↓） 藍色膠囊 === -->
+  <g id="chip-down" filter="url(#softShadow)">
+    <rect x="18" y="132" width="46" height="22" rx="11" ry="11" fill="#1e243b" stroke="#2e365a" stroke-width="1"/>
+    <circle cx="28" cy="143" r="3.2" fill="#4cc2ff"/>
+    <!-- 向下箭頭 -->
+    <path d="M 40 137 L 44 143 L 40 143 L 40 149 L 36 149 L 36 143 L 32 143 Z" fill="url(#downGrad)" stroke="#4cc2ff" stroke-width="0.5" stroke-linejoin="round"/>
+    <text x="48.5" y="148.2" text-anchor="middle" font-family="'Consolas','Cascadia Code',monospace" font-size="7.5" font-weight="700" fill="#4cc2ff">↓</text>
+  </g>
+
+  <!-- === 右：上傳箭頭（↑） 橘色膠囊 === -->
+  <g id="chip-up" filter="url(#softShadow)">
+    <rect x="128" y="32" width="46" height="22" rx="11" ry="11" fill="#1e243b" stroke="#2e365a" stroke-width="1"/>
+    <circle cx="138" cy="43" r="3.2" fill="#ff9e64"/>
+    <path d="M 148 49 L 152 43 L 152 43 L 156 49 L 152 49 L 152 55 L 148 55 Z" fill="url(#upGrad)" stroke="#ff9e64" stroke-width="0.5" stroke-linejoin="round"/>
+    <text x="142" y="47.8" text-anchor="middle" font-family="'Consolas','Cascadia Code',monospace" font-size="7.5" font-weight="700" fill="#ff9e64">↑</text>
+  </g>
+
+  <!-- === 右下盾牌（層級 5 防護） === -->
+  <g id="shield-badge" filter="url(#softShadow)">
+    <!-- 盾牌外形 -->
+    <path d="M 136 118 L 160 118 L 164 124 L 150 168 L 136 154 L 120 124 L 124 118 Z" fill="none" stroke="#2e365a" stroke-width="1.2" opacity="0.0"/>
+    <!-- 盾牌主體 -->
+    <path d="M 136 120 L 156 120 L 159.5 125.5 L 147.5 165 L 136 150.5 L 124.5 125.5 Z"
+          fill="url(#shieldGrad)" stroke="#ff6b81" stroke-width="2.2" stroke-linejoin="round"/>
+    <!-- 盾牌內高光 -->
+    <path d="M 136 123 L 153.5 123 L 156 127.5 L 147 158 L 136 147 L 127 127.5 Z"
+          fill="none" stroke="#ffffff" stroke-width="0.9" opacity="0.10" stroke-linejoin="round"/>
+    <!-- 盾牌中心鎖/勾 圖標 -->
+    <g stroke-linecap="round" stroke-linejoin="round">
+      <!-- 鎖身 -->
+      <rect x="138.5" y="137.5" width="15" height="11" rx="2" ry="2" fill="#ff6b81" stroke="#ffffff" stroke-width="1.2"/>
+      <!-- 鎖樑 -->
+      <path d="M 141.5 137.5 C 141.5 132.8 143.8 129.5 146 129.5 C 148.2 129.5 150.5 132.8 150.5 137.5"
+             fill="none" stroke="#ff6b81" stroke-width="2.2"/>
+      <!-- 鎖孔點 -->
+      <circle cx="146" cy="143" r="1.6" fill="#0d111f"/>
+    </g>
+    <!-- 盾牌右上角小綠點（安全） -->
+    <circle cx="159" cy="122" r="5.5" fill="#1a3a2a" stroke="#7ed67e" stroke-width="1.5"/>
+    <path d="M 156.2 122 L 158.2 124 L 161.8 120" fill="none" stroke="#7ed67e" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+
+  <!-- 底部品牌小字（僅大尺寸顯示，32px 以下會因縮放隱藏） -->
+  <g id="brand-text" opacity="0.0">
+    <text x="96" y="176" text-anchor="middle" font-family="'Segoe UI','Microsoft JhengHei UI',sans-serif" font-size="7" font-weight="700" fill="#9aa5c6" letter-spacing="1.2">WIN-NETMON</text>
+  </g>
+
+  <!-- 內陰影邊框 -->
+  <rect x="12" y="12" width="168" height="168" rx="36" ry="36" fill="none" stroke="#ffffff" stroke-width="1" opacity="0.06"/>
+</svg>

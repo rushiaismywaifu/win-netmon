@@ -43,6 +43,7 @@ class MainApp(tk.Tk):
         self.geometry("1360x900")
         self.minsize(1120, 700)
         self.configure(bg=theme.BG)
+        self._set_app_icon()
 
         self.fonts = theme.pick_fonts(self)
         theme.apply_theme(self, self.fonts)
@@ -581,6 +582,41 @@ class MainApp(tk.Tk):
     def show_connections_for(self, process_name: str) -> None:
         self.notebook.select(self.connections_tab)
         self.connections_tab.set_search(process_name)
+
+    def _set_app_icon(self) -> None:
+        """嘗試載入應用程式圖示（assets/icon.png），失敗則忽略（無頭測試環境）。"""
+        try:
+            from pathlib import Path
+
+            # 可能的圖示位置（依執行目錄不同）
+            candidates = [
+                Path(__file__).resolve().parents[2] / "assets" / "icon.png",
+                Path(__file__).resolve().parents[2] / "assets" / "icon-simple.png",
+                Path.cwd() / "assets" / "icon.png",
+            ]
+            icon_path = next((p for p in candidates if p.is_file()), None)
+            if icon_path is None:
+                return
+            # Tkinter 僅原生支援 PNG/GIF，SVG 需轉檔；這裡用 PhotoImage 載入 PNG
+            img = tk.PhotoImage(file=str(icon_path))
+            # 保留引用避免被 GC
+            self._icon_img = img  # type: ignore[attr-defined]
+            try:
+                self.iconphoto(True, img)
+            except Exception:
+                pass
+            # Windows 工作列圖示（若有 .ico 也可加）
+            try:
+                ico_candidates = [
+                    Path(__file__).resolve().parents[2] / "assets" / "icon.ico",
+                ]
+                ico = next((p for p in ico_candidates if p.is_file()), None)
+                if ico:
+                    self.iconbitmap(str(ico))
+            except Exception:
+                pass
+        except Exception:
+            pass
 
     def _relaunch(self) -> None:
         if relaunch_as_admin():

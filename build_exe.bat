@@ -13,8 +13,15 @@ cd /d "%~dp0"
 python -m pip install -r requirements.txt pyinstaller
 if %errorlevel% neq 0 ( echo 安裝套件失敗 & pause & exit /b 1 )
 
+REM 若 assets/icon.ico 存在則自動帶上圖示
+if exist assets\icon.ico (
+    set ICON_OPT=--icon assets\icon.ico
+) else (
+    set ICON_OPT=
+)
+
 python -m PyInstaller --noconfirm --onefile --windowed --uac-admin ^
-    --name WinNetMon ^
+    --name WinNetMon %ICON_OPT% ^
     --collect-submodules scapy --collect-all pydivert ^
     main.py
 if %errorlevel% neq 0 ( echo 打包失敗 & pause & exit /b 1 )

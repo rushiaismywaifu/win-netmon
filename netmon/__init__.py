@@ -11,5 +11,5 @@
 GUI 在 netmon.gui（tkinter，Windows/Python 內建，不需另外安裝）。
 """
 
-__version__ = "1.1.10"
+__version__ = "1.1.11"
 __app_name__ = "Win-NetMon"

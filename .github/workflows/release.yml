@@ -1,0 +1,112 @@
+name: Release
+
+# 推送 v* tag 時：打包 exe → 建立 GitHub Release（含自動產生的變更紀錄）。
+# 日常發佈流程：merge 到 main → auto-tag.yml 自動升版並打 tag → 這個 workflow 接手。
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 要發佈的既有 tag（例如 v1.2.0）。請在該 tag 的 ref 上執行；留空則用目前的 ref 名稱
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: 檢查 tag 與版本號一致
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: netmon.__version__ 必須等於 tag
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          python - "$TAG" <<'PY'
+          import re, subprocess, sys
+          tag = sys.argv[1]
+          if not re.fullmatch(r"v?\d+\.\d+\.\d+", tag):
+              sys.exit(f"tag 名稱格式錯誤：{tag}（應為 v1.2.3）")
+          try:
+              src = subprocess.check_output(["git", "show", f"{tag}:netmon/__init__.py"], text=True)
+          except subprocess.CalledProcessError:
+              sys.exit(f"找不到 tag：{tag}")
+          version = re.search(r'__version__\s*=\s*"([^"]+)"', src).group(1)
+          if tag.lstrip("vV") != version:
+              sys.exit(f"tag {tag} 與 netmon.__version__（{version}）不一致：請先修好版本號再發佈")
+          print(f"OK：{tag} ↔ netmon.__version__ {version}")
+          PY
+
+  build:
+    name: 打包 exe
+    needs: verify
+    uses: ./.github/workflows/build-exe.yml
+
+  publish:
+    name: 建立 GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: 取回打包好的 exe
+        uses: actions/download-artifact@v4
+        with:
+          name: WinNetMon-windows-x64
+          path: release-assets
+
+      - name: 產生變更紀錄
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set +e
+          gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+            -f tag_name="$TAG" --jq .body > auto-notes.md
+          RC=$?
+          set -e
+          if [ "$RC" -ne 0 ] || [ ! -s auto-notes.md ]; then
+            echo "（這個 tag 沒有可用的自動變更紀錄）" > auto-notes.md
+          fi
+
+      - name: 發佈 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          {
+            echo "### 下載"
+            echo ""
+            echo "| 檔案 | 說明 |"
+            echo "|---|---|"
+            echo "| \`WinNetMon.exe\` | Windows x64 單檔版；啟動時會自動要求系統管理員權限 |"
+            echo "| \`WinNetMon.exe.sha256\` | 校驗碼（\`certutil -hashfile WinNetMon.exe SHA256\` 比對） |"
+            echo ""
+            echo "> 層級 3、4（封包擷取）需要另外安裝 [Npcap](https://npcap.com)。"
+            echo "> 層級 5 的 WinDivert 驅動已隨 pydivert 收進 exe。"
+            echo ""
+            cat auto-notes.md
+          } > notes.md
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG 已存在 → 覆蓋附件與說明"
+            gh release upload "$TAG" release-assets/* --clobber
+            gh release edit "$TAG" --notes-file notes.md
+          else
+            gh release create "$TAG" release-assets/* \
+              --verify-tag --title "Win-NetMon $TAG" --notes-file notes.md
+          fi
+
+      - name: 顯示結果
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: gh release view "$TAG"

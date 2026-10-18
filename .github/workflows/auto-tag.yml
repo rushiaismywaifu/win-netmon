@@ -1,0 +1,80 @@
+name: Auto Tag
+
+# 合併到 main 之後自動升 patch 版號、commit、打 tag 並推上去；
+# tag 推送後會觸發 release.yml（打包 exe + 建立 GitHub Release）。
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 版本號要升多少
+        type: choice
+        default: patch
+        options: [patch, minor, major]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: auto-tag-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    name: 升版 + 打 tag
+    # 避免自己產生的版本 commit 再觸發一次（無限迴圈）
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: 檢查是否需要升版
+        id: already_tagged
+        run: |
+          MSG=$(git log -1 --pretty=%B)
+          TAGS=$(git tag --points-at HEAD)
+          if echo "$MSG" | grep -qiE "\[(skip release|no release|skip ci)\]"; then
+            echo "HEAD 的 commit 訊息含 [skip release]，略過升版：$MSG"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          elif [ -n "$TAGS" ]; then
+            echo "HEAD 已有 tag（$(echo "$TAGS" | tr '\n' ' ')），略過升版"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 升版（netmon/__init__.py）
+        id: bump
+        if: steps.already_tagged.outputs.skip != 'true'
+        run: |
+          BUMP="${{ inputs.bump || 'patch' }}"
+          NEW=$(python tools/version.py bump "$BUMP" --write)
+          if [ -n "$(git tag -l "v$NEW")" ]; then
+            echo "::error::tag v$NEW 已存在，請先手動處理版本號"
+            exit 1
+          fi
+          git --no-pager diff -- netmon/__init__.py
+          echo "version=$NEW" >> "$GITHUB_OUTPUT"
+          echo "### 自動升版：v$NEW" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: commit + tag + push
+        if: steps.bump.outputs.version != ''
+        env:
+          VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add netmon/__init__.py
+          git commit -m "chore(release): v$VERSION"
+          # 這個 commit 不該再觸發 auto-tag（github.actor 已是 bot，雙重保險）
+          git tag -a "v$VERSION" -m "Win-NetMon v$VERSION"
+          git push origin "main:refs/heads/main"
+          git push origin "refs/tags/v$VERSION"
+          echo "已發佈 tag v$VERSION → 接下來由 release.yml 打包並建立 Release"

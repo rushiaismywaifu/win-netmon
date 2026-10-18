@@ -15,6 +15,7 @@
 > 「層級 5 使用說明」與安全設計，只在**你自己的電腦**上、且理解自己在擋什麼的前提下使用。
 
 ![Python](https://img.shields.io/badge/Python-3.9%2B-blue) ![Platform](https://img.shields.io/badge/Platform-Windows-0078D6) ![GUI](https://img.shields.io/badge/GUI-tkinter-green)
+[![CI](https://github.com/rushiaismywaifu/win-netmon/actions/workflows/ci.yml/badge.svg)](https://github.com/rushiaismywaifu/win-netmon/actions/workflows/ci.yml) [![Build exe](https://github.com/rushiaismywaifu/win-netmon/actions/workflows/build-exe.yml/badge.svg)](https://github.com/rushiaismywaifu/win-netmon/actions/workflows/build-exe.yml) [![Release](https://github.com/rushiaismywaifu/win-netmon/actions/workflows/release.yml/badge.svg)](https://github.com/rushiaismywaifu/win-netmon/releases) ![Latest release](https://img.shields.io/github/v/release/rushiaismywaifu/win-netmon?label=Release)
 
 ---
 
@@ -166,6 +167,8 @@ build_exe.bat    :: 用 PyInstaller 產出 dist\WinNetMon.exe（雙擊時會自�
 ```
 Npcap 仍需另外安裝，無法打包進去；WinDivert 驅動則已隨 pydivert 一起收進 exe（`--collect-all pydivert`）。
 
+不想自己打包也可以直接下載：[Releases](https://github.com/rushiaismywaifu/win-netmon/releases) 裡的 `WinNetMon.exe`（Windows x64 單檔版）。
+
 ---
 
 ## 專案結構
@@ -177,6 +180,7 @@ win-netmon/
 ├─ run.bat                  # 一般身分啟動
 ├─ build_exe.bat            # （選用）PyInstaller 打包
 ├─ requirements.txt         # psutil、scapy、pydivert(僅 Win)（GUI 用內建 tkinter，不必裝）
+├─ ruff.toml                # lint 設定（ruff check .）
 ├─ netmon/
 │  ├─ speed_monitor.py      # 層級 1：整體與每介面網速
 │  ├─ connections.py        # 層級 2：連線表 + 程式名快取
@@ -197,7 +201,8 @@ win-netmon/
 │     └─ theme.py           # 深色主題色票與字體
 └─ tests/
    ├─ test_core.py          # 層級 1~4 核心測試：python -m unittest discover -s tests -v
-   └─ test_level5.py        # 層級 5：規則引擎/防火牆假 runner/假 WinDivert 端到端
+   ├─ test_level5.py        # 層級 5：規則引擎/防火牆假 runner/假 WinDivert 端到端
+   └─ test_version_tools.py # 版本號工具（tools/version.py）
 ```
 
 設計上核心（`speed_monitor` / `connections` / `traffic` / `capture` / `rule_engine` / `divert_engine` / `win_firewall` / `packet_info`）
@@ -211,7 +216,34 @@ python -m unittest discover -s tests -v
 涵蓋：位元組格式化、DNS 查詢解析、TLS SNI 擷取、HTTP 解析、協定分類、
 連線索引比對（精確 + 埠號後備）、流量彙總速率、Scapy 封包轉換與 CSV 匯出（層級 1~4 共 12 項）；
 層級 5 另有 34 項：埠/IP/網域規格解析、規則比對與優先順序、令牌桶限速、延遲/丟包、DNS 網域封鎖、
-轉址與回程還原、WinDivert 過濾字串編譯、防火牆指令（假 runner）、rules.json 往返、假 WinDivert 端到端（合計 46 項）。
+轉址與回程還原、WinDivert 過濾字串編譯、防火牆指令（假 runner）、rules.json 往返、假 WinDivert 端到端（層級 1~5 共 46 項）；
+另有 7 項測 `tools/version.py`（版本號遞增／寫回／產生 exe 版本資訊），合計 53 項。
+
+---
+
+## 開發與發佈（GitHub Actions）
+
+`.github/workflows/` 內共有四條 workflow：
+
+| Workflow | 觸發時機 | 做的事 |
+|---|---|---|
+| [`ci.yml`](.github/workflows/ci.yml) | push / PR 到 `main` | `ruff check` + 語法編譯檢查；`ubuntu` 與 `windows` × Python 3.9、3.13 跑單元測試 |
+| [`build-exe.yml`](.github/workflows/build-exe.yml) | push `main`、手動、或被 `release.yml` 呼叫 | 在 `windows-latest` 用 PyInstaller 打包 `WinNetMon.exe`（參數與 `build_exe.bat` 相同，另外帶入版本資訊），驗證產物並上傳 artifact |
+| [`auto-tag.yml`](.github/workflows/auto-tag.yml) | push `main`、手動 | 自動把 `netmon/__init__.py` 的版本號往上加一階（patch）、commit、打 `vX.Y.Z` tag 並推送 |
+| [`release.yml`](.github/workflows/release.yml) | 推送 `v*` tag | 檢查 tag 與 `__version__` 一致 → 呼叫打包 workflow → 建立 GitHub Release（附 `WinNetMon.exe`、`WinNetMon.exe.sha256` 與自動產生的變更紀錄） |
+
+日常發佈只要 **merge 到 `main`**，剩下的會自動接力：`auto-tag` 升版打 tag → `release` 打包並開 Release。
+
+版本號唯一來源是 `netmon/__init__.py` 的 `__version__`（GUI 右下角與 exe 檔案內容都用它），相關操作可以直接跑：
+
+```bat
+python tools/version.py bump patch              :: 印出下一版（不修改檔案）
+python tools/version.py bump minor --write      :: 升到 1.2.0 並寫回
+python tools/version.py pyinstaller-version     :: 印出 PyInstaller 用的 version_info.txt
+```
+
+想自己控制版號時，在 commit 訊息或 PR 說明裡寫 `[skip release]`，或直接手動 `git tag vX.Y.Z && git push --tags`（tag 與
+`__version__` 不一致時 `release.yml` 會擋下來）。
 
 ---
 

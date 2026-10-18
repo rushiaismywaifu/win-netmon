@@ -1,0 +1,19 @@
+# Ruff（CI 的 lint 關卡）設定
+# 執行：ruff check .
+line-length = 100
+target-version = "py39"
+extend-exclude = ["build", "dist", ".venv", "venv", ".ruff_cache"]
+
+[lint]
+select = ["E4", "E7", "E9", "F", "B", "UP", "I"]
+ignore = [
+  "F401",   # 有些匯入是為了觸發/確認環境（tkinter、psutil…）或 re-export
+  "UP015",  # Path.open("r", encoding=...) 寫法較直覺，保留
+  "UP035",  # typing.Callable 等沿用舊寫法，避免動到 3.9 相容性
+  "UP037",  # 帶引號的註解型別是刻意的（3.9 相容）
+  "B007",   # for _, unit in ... 的 unpack 用法
+  "I001",   # import 排序：現有檔案沿用既有分組方式
+]
+
+[lint.per-file-ignores]
+"tests/*" = ["E402"]

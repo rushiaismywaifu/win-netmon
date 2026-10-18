@@ -2,6 +2,8 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+.ruff_cache/
+version_info.txt
 *.pcap
 *.pcapng
 build/

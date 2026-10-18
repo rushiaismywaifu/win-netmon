@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint（ruff + 語法編譯）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 安裝 ruff
+        run: python -m pip install --upgrade pip ruff
+      - name: ruff check
+        run: ruff check .
+      - name: 語法編譯檢查
+        run: python -m compileall -q main.py netmon tools tests
+
+  test:
+    name: 測試 ${{ matrix.os }} / Python ${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.9", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: 安裝相依套件
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+      - name: 單元測試
+        run: python -m unittest discover -s tests -v
+      - name: 環境診斷（main.py --check）
+        if: runner.os == 'Windows'
+        # Npcap / WinDivert 在 runner 上不一定有，診斷輸出僅供參考，不擋 CI
+        continue-on-error: true
+        run: python main.py --check

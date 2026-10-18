@@ -24,6 +24,7 @@ import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
+from functools import lru_cache
 
 from .packet_info import parse_dns
 
@@ -87,14 +88,20 @@ def parse_ip_spec(spec: str) -> ipaddress.IPv4Network | ipaddress.IPv6Network | 
     return ipaddress.ip_network(spec, strict=False)
 
 
+@lru_cache(maxsize=4096)
+def _parsed_address(text: str):
+    """字串 -> ipaddress 物件（層級 5 熱路徑：同一個位址字串不重複解析）。"""
+    return ipaddress.ip_address(text)
+
+
 def ip_in_spec(ip: str, network) -> bool:
     if network is None:
         return True
     try:
-        addr = ipaddress.ip_address(ip.split("%")[0])
+        attrs = _parsed_address(ip.split("%")[0])
     except ValueError:
         return False
-    return addr.version == network.version and addr in network
+    return attrs.version == network.version and attrs in network
 
 
 def normalize_domain(domain: str) -> str:

@@ -244,14 +244,16 @@ win-netmon/
 ```bat
 python -m unittest discover -s tests -v
 ```
-涵蓋：位元組格式化、DNS 查詢解析、TLS SNI 擷取、HTTP 解析、協定分類、
-連線索引比對（精確 + 埠號後備）、流量彙總速率與批次 API、Scapy 封包轉換與 CSV 匯出（層級 1~4 共 13 項）；
-層級 5 另有 34 項：埠/IP/網域規格解析、規則比對與優先順序、令牌桶限速、延遲/丟包、DNS 網域封鎖、
+涵蓋：位元組格式化、DNS 查詢解析、TLS SNI 擷取、HTTP 解析、協定分類
+（含 HTTP 偵測第一 byte 閘門的等價行為）、整體網速取樣（單次 pernic 快照 +
+None 計數防護）、連線索引比對（精確 + 埠號後備）、流量彙總速率與批次 API、
+Scapy 封包轉換與 CSV 匯出（層級 1~4 共 17 項）；
+層級 5 另有 36 項：埠/IP/網域規格解析（含位址解析 LRU 快取）、規則比對與優先順序、令牌桶限速、延遲/丟包、DNS 網域封鎖、
 轉址與回程還原、WinDivert 過濾字串編譯、防火牆指令（假 runner）、rules.json 往返、假 WinDivert 端到端；
 另有 7 項測 `tools/version.py`（版本號遞增／寫回／產生 exe 版本資訊），
 21 項測 `npcap_install.py`（官網版本解析、官方來源白名單、假下載串流/完整性、Authenticode 判斷與一站式流程），
 21 項測 WinDivert 免 Npcap 後端（純 Python IP 解析、IPv6 位址文字化、BPF 子集轉譯、假 handle 的 SNIFF/保底回注、DLT_RAW pcap 往返），
-與 11 項測 GUI（假 tkinter 檢查 ttk 選項/封包列表增量裁剪/擷取非同步啟動、失敗還原與中斷偵測，真 Tk 開主視窗煙霧測試），合計 107 項。
+與 15 項測 GUI（假 tkinter 檢查 ttk 選項/封包列表增量裁剪/擷取非同步啟動、失敗還原與中斷偵測/反向 DNS 快取 TTL，真 Tk 開主視窗煙霧測試），合計 117 項。
 
 ---
 
@@ -311,6 +313,11 @@ python tools/version.py pyinstaller-version     :: 印出 PyInstaller 用的 ver
    增量移除最舊的列（不會整表重建）；「開始擷取」在背景緒程開啟後端
    （含等驅動就緒），介面不會因此凍結；長時間擷取/攔截請縮小過濾範圍，
    避免讓全部流量都流經 Python。
+   其他效能設計：層級 5 逐包規則比對把「位址字串 → 位址物件」用
+   LRU 快取起來（同一來源/目的位址不重複解析）；明文 HTTP 偵測先看
+   payload 第一個 byte，非 HTTP 開頭（如 TLS/QUIC/二進位）直接跳過
+   decode；層級 1 取樣只做一次 `net_io_counters(pernic=True)`（彙總值
+   自行加總）；反向 DNS 查詢結果有 TTL（正 10 分鐘／負 3 分鐘）。
 
 ---
 

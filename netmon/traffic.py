@@ -150,11 +150,15 @@ class TrafficAggregator:
         return items
 
     def totals(self) -> tuple[int, int, int]:
-        """回傳 (已歸屬上傳, 已歸屬下載, 未歸屬總量)。"""
+        """回傳 (已歸屬上傳, 已歸屬下載, 未歸屬總量)——單鎖一次掃完。"""
+        sent = recv = unknown = 0
         with self._lock:
-            sent = sum(p.bytes_sent for p in self._procs.values() if p.pid != UNKNOWN_PID)
-            recv = sum(p.bytes_recv for p in self._procs.values() if p.pid != UNKNOWN_PID)
-            unknown = sum(p.total_bytes for p in self._procs.values() if p.pid == UNKNOWN_PID)
+            for proc in self._procs.values():
+                if proc.pid == UNKNOWN_PID:
+                    unknown += proc.total_bytes
+                else:
+                    sent += proc.bytes_sent
+                    recv += proc.bytes_recv
         return sent, recv, unknown
 
     def connection_counts(self, records: list[ConnectionRecord]) -> dict[int, int]:

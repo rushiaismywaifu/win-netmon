@@ -574,6 +574,73 @@ class TestCaptureStartAsync(unittest.TestCase):
         self._with_app(check)
 
 
+class TestHostnameResolver(unittest.TestCase):
+    """反向 DNS 快取：TTL 過期重新查詢、pending 時先維持舊值（注入式 lookup）。"""
+
+    def _resolver(self, lookup):
+        with _FakeTkContext():
+            module = importlib.import_module("netmon.gui.connections_tab")
+        resolver = module.HostnameResolver()
+        resolver._lookup = lookup
+        return resolver
+
+    @staticmethod
+    def _wait(resolver, ip, timeout=2.0) -> None:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            with resolver._lock:
+                if ip not in resolver._pending:
+                    return
+            time.sleep(0.01)
+
+    def test_expired_positive_requeries_keeps_display(self):
+        calls: list[str] = []
+
+        def lookup(ip):
+            calls.append(ip)
+            return ("host.example", [], None)
+
+        resolver = self._resolver(lookup)
+        resolver._cache["9.9.9.9"] = ("old-host.example",
+                                      time.time() - (resolver.TTL_POSITIVE + 1))
+        # 過期：先回舊值（畫面不閃爍），同時在背景重新查詢
+        self.assertEqual(resolver.get("9.9.9.9"), "old-host.example")
+        self._wait(resolver, "9.9.9.9")
+        self.assertEqual(resolver._cache["9.9.9.9"][0], "host.example")
+        self.assertEqual(calls, ["9.9.9.9"])
+
+    def test_fresh_cache_hit_does_not_lookup(self):
+        def no_lookup(ip):
+            raise AssertionError("快取有效時不該發起查詢")
+
+        resolver = self._resolver(no_lookup)
+        resolver._cache["1.1.1.1"] = ("fresh.example", time.time())
+        self.assertEqual(resolver.get("1.1.1.1"), "fresh.example")
+
+    def test_expired_negative_requeries(self):
+        def lookup(ip):
+            raise OSError("模擬查不到")
+
+        resolver = self._resolver(lookup)
+        resolver._cache["8.8.8.8"] = ("-", time.time() - (resolver.TTL_NEGATIVE + 1))
+        # 負向過期：先回舊值（查無 = "-"），同時在背景重新查詢
+        self.assertEqual(resolver.get("8.8.8.8"), "-")
+        self._wait(resolver, "8.8.8.8")
+        self.assertEqual(resolver._cache["8.8.8.8"][0], "-")  # 重新查仍是查不到
+        self.assertGreaterEqual(resolver._cache["8.8.8.8"][1],
+                                time.time() - resolver.TTL_NEGATIVE)
+
+    def test_loopback_and_empty_skipped(self):
+        def no_lookup(ip):
+            raise AssertionError("保留位址不該查詢")
+
+        resolver = self._resolver(no_lookup)
+        self.assertEqual(resolver.get("127.0.0.1"), "-")
+        self.assertEqual(resolver.get("0.0.0.0"), "-")
+        self.assertEqual(resolver.get(""), "-")
+        self.assertEqual(resolver._pending, set())
+
+
 class TestMainStdStreams(unittest.TestCase):
     def test_ensure_std_streams_replaces_none(self):
         import main

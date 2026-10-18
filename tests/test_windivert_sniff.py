@@ -5,6 +5,7 @@ PacketRecord（分類/方向/程式歸屬）、CaptureEngine 以假 handle 跑
 WinDivert 後端（SNIFF 不回注、非 SNIFF 逐包原樣回注保底、開局錯誤
 浮現、背景中斷寫入 last_error）、DLT_RAW pcap 存讀往返。
 """
+import ipaddress
 import socket
 import struct
 import time
@@ -83,6 +84,24 @@ class TestParseIPPacket(unittest.TestCase):
         with_ext = struct.pack(">IHBB", 0x60000000, len(body), 0, 64) + src + dst + body
         p2 = parse_ip_packet(with_ext)
         self.assertEqual((p2.transport, p2.src_port, p2.payload), ("UDP", 1111, DNS_QUERY))
+
+    def test_ipv6_address_text_is_rfc5952_and_parsable(self):
+        """位址文字化用 socket.inet_ntop：零壓縮正確、且可被 ipaddress 解回同位址。"""
+        for src_text, dst_text in (
+            ("2001:db8::1", "::ffff:192.168.1.5"),
+            ("fe80::1", "2001:4860:4860::8888"),
+            ("::1", "2001:0:0:2:0:0:0:3"),
+            ("::", "2001:db8:0:0:1:0:0:1"),
+        ):
+            with self.subTest(src=src_text, dst=dst_text):
+                src = socket.inet_pton(socket.AF_INET6, src_text)
+                dst = socket.inet_pton(socket.AF_INET6, dst_text)
+                p = parse_ip_packet(
+                    struct.pack(">IHBB", 0x60000000, 0, 59, 64) + src + dst)
+                self.assertEqual(p.src, socket.inet_ntop(socket.AF_INET6, src))
+                self.assertEqual(p.dst, socket.inet_ntop(socket.AF_INET6, dst))
+                self.assertEqual(ipaddress.IPv6Address(p.src).packed, src)
+                self.assertEqual(ipaddress.IPv6Address(p.dst).packed, dst)
 
     def test_truncated_and_garbage(self):
         self.assertIsNone(parse_ip_packet(b""))

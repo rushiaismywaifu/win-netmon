@@ -162,7 +162,6 @@ class ConnectionsTab(ttk.Frame):
             if selected_key is not None and rec.tuple_key() == selected_key:
                 self.tree.selection_set(iid)
                 self._sel_key = selected_key
-        self._displayed_before = out
         self.count_label.config(text=f"共 {len(out)} 條連線（全部 {len(self._records)} 條）")
 
     # ------------------------------------------------------------- 互動

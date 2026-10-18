@@ -109,6 +109,31 @@ class TestTraffic(unittest.TestCase):
         agg.reset()
         self.assertEqual(agg.ranking(), [])
 
+    def test_add_batch_equals_add_packet(self):
+        """批次 API（GUI 排空佇列用）與逐包 API 結果必須完全一致。"""
+        entries = [
+            (1, "a.exe", 100, True, "1.1.1.1:443"),
+            (1, "a.exe", 900, False, "1.1.1.1:443"),
+            (2, "b.exe", 50, True, ""),
+            (1, "a.exe", 300, True, "1.1.1.1:443"),
+            (2, "b.exe", 700, False, "8.8.8.8:53"),
+        ]
+        one = TrafficAggregator()
+        many = TrafficAggregator()
+        for pid, name, length, sent, endpoint in entries:
+            one.add_packet(pid, name, length, sent=sent, remote_endpoint=endpoint)
+        many.add_batch(entries)
+        many.add_batch(())  # 空批次也不能出事
+        def snapshot(agg):
+            return [
+                (p.pid, p.name, p.bytes_sent, p.bytes_recv, p.packets_sent,
+                 p.packets_recv, sorted(p.endpoints))
+                for p in agg.ranking()
+            ]
+
+        self.assertEqual(snapshot(one), snapshot(many))
+        self.assertEqual(one.totals(), many.totals())
+
 
 class TestScapyConversion(unittest.TestCase):
     def test_packet_to_record(self):

@@ -62,6 +62,7 @@ class PacketsTab(ttk.Frame):
         self.app = app
         fonts = app.fonts
         self._records: list[PacketRecord] = []
+        self._by_iid: dict[str, PacketRecord] = {}   # 樹上列 iid -> 紀錄（選取查找 O(1)）
         self._proto_counts: dict[str, int] = {}
         self._ifaces: list[dict] = []
         self._last_stat = (time.time(), 0)  # (時間, 封包數) 用於估算 pps
@@ -355,8 +356,9 @@ class PacketsTab(ttk.Frame):
         self.bpf_entry.config(state="disabled" if running else "normal")
 
     # ------------------------------------------------------------- 資料
-    def _matches(self, rec: PacketRecord) -> bool:
-        keyword = self.display_filter_var.get().strip().lower()
+    def _matches(self, rec: PacketRecord, keyword: str | None = None) -> bool:
+        if keyword is None:
+            keyword = self.display_filter_var.get().strip().lower()
         if not keyword:
             return True
         haystack = (f"{rec.src_endpoint} {rec.dst_endpoint} {rec.protocol} "
@@ -364,35 +366,50 @@ class PacketsTab(ttk.Frame):
         return keyword in haystack
 
     def add_records(self, batch: list[PacketRecord]) -> None:
+        """把一批新封包加進列表（GUI 主緒程每 200ms 呼叫）。
+
+        高流量下這是熱路徑：超過上限時只「刪掉最舊的幾列」而不是整表重建，
+        且整批只查一次顯示篩選字串（每次 .get() 都是一趟 Tcl 呼叫）。
+        """
         if not batch:
             return
         for rec in batch:
             self._proto_counts[rec.protocol] = self._proto_counts.get(rec.protocol, 0) + 1
+        prev_len = len(self._records)
         self._records.extend(batch)
-        trimmed = False
-        if len(self._records) > MAX_RECORDS:
-            excess = len(self._records) - MAX_RECORDS
+        # 超過上限：丟棄最舊的紀錄，並只刪除它們對應的表格列（增量，不重建整表）
+        excess = len(self._records) - MAX_RECORDS
+        first_kept = 0
+        if excess > 0:
+            for rec in self._records[:excess]:
+                self._remove_row(rec)
             del self._records[:excess]
-            trimmed = True
-        if trimmed:
-            self._rebuild()
-            return
+            # 這批自己也可能「還沒顯示就被裁掉」，那些也不必插入
+            first_kept = max(excess - prev_len, 0)
         if self.pause_var.get():
             return
+        keyword = self.display_filter_var.get().strip().lower()
         last_iid = None
-        for rec in batch:
-            if self._matches(rec):
+        for rec in batch[first_kept:]:
+            if self._matches(rec, keyword):
                 last_iid = self._insert(rec)
-        # 表格列數上限保護
-        children = self.tree.get_children()
-        if len(children) > MAX_RECORDS:
-            self.tree.delete(*children[: len(children) - MAX_RECORDS])
         if last_iid and self.autoscroll_var.get():
             self.tree.see(last_iid)
+
+    def _remove_row(self, rec: PacketRecord) -> None:
+        """移除單一紀錄的表格列（若它有顯示在樹上）。"""
+        iid = getattr(rec, "_iid", "")
+        if iid and self._by_iid.get(iid) is rec:
+            del self._by_iid[iid]
+            try:
+                self.tree.delete(iid)
+            except tk.TclError:
+                pass
 
     def _insert(self, rec: PacketRecord) -> str:
         iid = f"r{rec.index}_{id(rec) % 100000}"
         rec._iid = iid  # type: ignore[attr-defined]
+        self._by_iid[iid] = rec
         tag = f"proto_{rec.protocol}"
         return self.tree.insert("", "end", iid=iid, tags=(tag,), values=(
             rec.index, fmt_time(rec.timestamp), rec.direction_arrow,
@@ -401,16 +418,19 @@ class PacketsTab(ttk.Frame):
         ))
 
     def _rebuild(self) -> None:
+        keyword = self.display_filter_var.get().strip().lower()
         self.tree.delete(*self.tree.get_children())
+        self._by_iid.clear()
         last_iid = None
-        for rec in self._records[-MAX_RECORDS:]:
-            if self._matches(rec):
+        for rec in self._records:
+            if self._matches(rec, keyword):
                 last_iid = self._insert(rec)
         if last_iid and self.autoscroll_var.get():
             self.tree.see(last_iid)
 
     def clear(self) -> None:
         self._records.clear()
+        self._by_iid.clear()
         self._proto_counts.clear()
         self.tree.delete(*self.tree.get_children())
         self._set_detail("點選上方任一封包，這裡會顯示逐層解析與 Hex dump。", "", "")
@@ -422,15 +442,7 @@ class PacketsTab(ttk.Frame):
 
     # ------------------------------------------------------------- 詳細
     def _record_from_iid(self, iid: str) -> PacketRecord | None:
-        values = self.tree.item(iid, "values")
-        if not values:
-            return None
-        # 用 No. + 時間交叉比對（rebuild 後 iid 會變，但 values 在）
-        no = int(values[0])
-        for rec in reversed(self._records):
-            if rec.index == no:
-                return rec
-        return None
+        return self._by_iid.get(iid)
 
     def _current_record(self) -> PacketRecord | None:
         sel = self.tree.selection()
@@ -481,7 +493,7 @@ class PacketsTab(ttk.Frame):
         state = f"● 擷取中（{names.get(backend, backend)}）" if running else "已停止"
         self.stats_label.config(
             text=f"{state}｜已擷取 {fmt_count(total_packets)} 封包 / {fmt_bytes(total_bytes)}"
-                 f"｜{pps:.0f} pps｜顯示 {len(self.tree.get_children()):,} 筆｜協定：{proto_text}")
+                 f"｜{pps:.0f} pps｜顯示 {len(self._by_iid):,} 筆｜協定：{proto_text}")
 
     def _context_menu(self, event) -> None:
         iid = self.tree.identify_row(event.y)

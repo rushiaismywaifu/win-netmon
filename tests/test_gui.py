@@ -397,6 +397,80 @@ class TestMakeTreeOptions(unittest.TestCase):
                     app._on_close()
 
 
+class TestPacketsTabTrim(unittest.TestCase):
+    """回歸測試：封包列表滿了之後只做增量裁剪（不整表重建），選取查找 O(1)。"""
+
+    @staticmethod
+    def _record(i: int):
+        from netmon.capture import PacketRecord
+
+        return PacketRecord(index=i, timestamp=1700000000.0 + i, length=100,
+                            src="10.0.0.2", dst="1.2.3.4", src_port=50000, dst_port=443,
+                            transport="TCP", protocol="TCP", info="x", direction="out",
+                            pid=1, process_name="a.exe", raw=b"")
+
+    def _with_app(self, callback) -> None:
+        with tempfile.TemporaryDirectory() as td, _FakeTkContext():
+            store_path = str(Path(td) / "rules.json")
+            with patch("netmon.rule_store.default_store_path", return_value=store_path):
+                app = importlib.import_module("netmon.gui.app").MainApp()
+                try:
+                    callback(app)
+                finally:
+                    app._on_close()
+
+    def test_full_buffer_trim_is_incremental(self):
+        packets_mod = importlib.import_module("netmon.gui.packets_tab")
+        limit = packets_mod.MAX_RECORDS
+
+        def check(app):
+            tab = app.packets_tab
+            total = limit + 3000
+            records = [self._record(i) for i in range(total)]
+            for start in range(0, total, 3000):
+                tab.add_records(records[start:start + 3000])
+            # 只保留最新 limit 筆，且表格列數一致
+            self.assertEqual(len(tab._records), limit)
+            self.assertEqual(tab._records[0].index, total - limit)
+            self.assertEqual(len(tab._by_iid), limit)
+            # 最舊的紀錄已從表格移除
+            self.assertNotIn(records[0]._iid, tab._by_iid)
+            # 選取查找用 iid 直接命中同一物件
+            first = tab._records[0]
+            self.assertIs(tab._record_from_iid(first._iid), first)
+
+        self._with_app(check)
+
+    def test_batch_larger_than_limit_skips_trimmed_rows(self):
+        packets_mod = importlib.import_module("netmon.gui.packets_tab")
+        limit = packets_mod.MAX_RECORDS
+
+        def check(app):
+            tab = app.packets_tab
+            records = [self._record(i) for i in range(limit + 500)]
+            tab.add_records(records)  # 單批就超過上限
+            self.assertEqual(len(tab._records), limit)
+            self.assertEqual(len(tab._by_iid), limit)
+            # 這批中被裁掉的紀錄從未插入表格（沒有 _iid）
+            self.assertFalse(hasattr(records[0], "_iid"))
+            self.assertIs(tab._record_from_iid(tab._records[-1]._iid), tab._records[-1])
+
+        self._with_app(check)
+
+    def test_display_filter_is_cached_and_rebuild_applies_it(self):
+        def check(app):
+            tab = app.packets_tab
+            tab.display_filter_var.set("udp")
+            tab.add_records([self._record(1), self._record(2)])
+            self.assertEqual(len(tab._records), 2)
+            self.assertEqual(len(tab._by_iid), 0)  # 都不符顯示篩選，不插列
+            tab.display_filter_var.set("")
+            tab._rebuild()
+            self.assertEqual(len(tab._by_iid), 2)
+
+        self._with_app(check)
+
+
 class TestMainStdStreams(unittest.TestCase):
     def test_ensure_std_streams_replaces_none(self):
         import main

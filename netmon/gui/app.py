@@ -377,69 +377,77 @@ class MainApp(tk.Tk):
             pass
 
     def _drain_loop(self) -> None:
-        if self._closing:
-            return
         try:
-            while True:
-                fn = self._ui_queue.get_nowait()
-                try:
-                    fn()
-                except Exception:
-                    pass
-        except queue.Empty:
-            pass
-        batch: list[PacketRecord] = []
-        try:
-            while len(batch) < 4000:
-                batch.append(self._packet_queue.get_nowait())
-        except queue.Empty:
-            pass
-        if batch:
-            for rec in batch:
-                self.aggregator.add_packet(rec.pid, rec.process_name, rec.length, sent=(rec.direction == "out"), remote_endpoint=rec.remote_endpoint)
-            self.packets_tab.add_records(batch)
-        self.after(DRAIN_MS, self._drain_loop)
+            if self._closing:
+                return
+            try:
+                while True:
+                    fn = self._ui_queue.get_nowait()
+                    try:
+                        fn()
+                    except Exception:
+                        pass
+            except queue.Empty:
+                pass
+            batch: list[PacketRecord] = []
+            try:
+                while len(batch) < 4000:
+                    batch.append(self._packet_queue.get_nowait())
+            except queue.Empty:
+                pass
+            if batch:
+                entries = ((rec.pid, rec.process_name, rec.length, rec.direction == "out",
+                            rec.remote_endpoint) for rec in batch)
+                self.aggregator.add_batch(entries)
+                self.packets_tab.add_records(batch)
+        finally:
+            # 不論這次處理發生什麼事，都要把下一次排程排上去（心跳不能斷）
+            if not self._closing:
+                self.after(DRAIN_MS, self._drain_loop)
 
     def _tick_loop(self) -> None:
-        if self._closing:
-            return
-        self._tick_count += 1
         try:
-            sample = self.speed_monitor.sample()
-            self.dashboard_tab.update_sample(sample, self.speed_monitor)
-            # 相容新舊 chip 實作
-            for chip, rate in ((self.chip_down, sample.down_rate), (self.chip_up, sample.up_rate)):
-                text = f"↓ {fmt_rate(rate)}" if chip is self.chip_down else f"↑ {fmt_rate(rate)}"
-                try:
-                    if hasattr(chip, "value_label"):
-                        chip.value_label.config(text=text)  # type: ignore[attr-defined]
-                    else:
-                        chip.config(text=text)
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        self.aggregator.update_rates()
-        self.refresh_processes_view()
-        engine = self.capture_engine
-        if getattr(self, "_capture_was_running", False) and not engine.running:
-            self.packets_tab.set_capturing_ui(False)
+            if self._closing:
+                return
+            self._tick_count += 1
             try:
-                self.capture_badge.config(text="● 封包擷取：已中斷", fg=theme.RED)
+                sample = self.speed_monitor.sample()
+                self.dashboard_tab.update_sample(sample, self.speed_monitor)
+                # 相容新舊 chip 實作
+                for chip, rate in ((self.chip_down, sample.down_rate), (self.chip_up, sample.up_rate)):
+                    text = f"↓ {fmt_rate(rate)}" if chip is self.chip_down else f"↑ {fmt_rate(rate)}"
+                    try:
+                        if hasattr(chip, "value_label"):
+                            chip.value_label.config(text=text)  # type: ignore[attr-defined]
+                        else:
+                            chip.config(text=text)
+                    except Exception:
+                        pass
             except Exception:
                 pass
-            if engine.last_error:
-                self.set_status(f"封包擷取已中斷：{engine.last_error}")
-        self._capture_was_running = engine.running
-        elapsed = (time.time() - engine.started_at) if engine.running and engine.started_at else 0.0
-        self.packets_tab.update_stats(engine.running, engine.total_packets, engine.total_bytes, elapsed, engine.backend)
-        if self.divert_engine.deadline_exceeded():
-            self.stop_divert_interception(reason="自動停止時間已到，即時攔截已停止（網路恢復正常）。")
-        if self.divert_engine.running or self._tick_count % 2 == 0:
-            self.firewall_tab.tick_refresh()
-        if self._tick_count % 2 == 0:
-            self.refresh_connections()
-        self.after(TICK_MS, self._tick_loop)
+            self.aggregator.update_rates()
+            self.refresh_processes_view()
+            engine = self.capture_engine
+            if getattr(self, "_capture_was_running", False) and not engine.running:
+                self.packets_tab.set_capturing_ui(False)
+                try:
+                    self.capture_badge.config(text="● 封包擷取：已中斷", fg=theme.RED)
+                except Exception:
+                    pass
+                if engine.last_error:
+                    self.set_status(f"封包擷取已中斷：{engine.last_error}")
+            self._capture_was_running = engine.running
+            elapsed = (time.time() - engine.started_at) if engine.running and engine.started_at else 0.0
+            self.packets_tab.update_stats(engine.running, engine.total_packets, engine.total_bytes, elapsed, engine.backend)
+            if self.divert_engine.deadline_exceeded():
+                self.stop_divert_interception(reason="自動停止時間已到，即時攔截已停止（網路恢復正常）。")
+            if self.divert_engine.running or self._tick_count % 2 == 0:
+                self.firewall_tab.tick_refresh()
+            if self._tick_count % 2 == 0:
+                self.refresh_connections()
+        finally:
+            if not self._closing:
+                self.after(TICK_MS, self._tick_loop)
 
     # ------------------------------------------------------------- 連線表
     def refresh_connections(self, manual: bool = False) -> None:

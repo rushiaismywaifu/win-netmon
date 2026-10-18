@@ -1,7 +1,8 @@
 name: Auto Tag
 
 # 合併到 main 之後自動升 patch 版號、commit、打 tag 並推上去；
-# tag 推送後會觸發 release.yml（打包 exe + 建立 GitHub Release）。
+# 接著明確觸發 release.yml（打包 exe + 建立 GitHub Release）。
+# 注意：用 GITHUB_TOKEN 推的 tag 不會自動觸發其他 workflow，所以是「呼叫」而不是「等待」。
 on:
   push:
     branches: [main]
@@ -18,6 +19,7 @@ on:
 
 permissions:
   contents: write
+  actions: write   # 需要明確觸發 release.yml（原因見最後一個 step 的說明）
 
 concurrency:
   group: auto-tag-${{ github.ref }}
@@ -73,8 +75,18 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add netmon/__init__.py
           git commit -m "chore(release): v$VERSION"
-          # 這個 commit 不該再觸發 auto-tag（github.actor 已是 bot，雙重保險）
           git tag -a "v$VERSION" -m "Win-NetMon v$VERSION"
           git push origin "main:refs/heads/main"
           git push origin "refs/tags/v$VERSION"
-          echo "已發佈 tag v$VERSION → 接下來由 release.yml 打包並建立 Release"
+
+      - name: 觸發 Release workflow（打包 + 發佈）
+        if: steps.bump.outputs.version != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          # 為什麼要手動觸發：用 GITHUB_TOKEN 推的 tag 不會產生新的 workflow run
+          # （GitHub 為防止無限迴圈而限制），所以 release.yml 不會被自動啟動。
+          gh workflow run release.yml --ref "v$VERSION"
+          echo "已呼叫 release.yml（ref=v$VERSION）→ 打包 WinNetMon.exe 並建立 Release"
+          echo "### 自動發佈 v$VERSION" >> "$GITHUB_STEP_SUMMARY"

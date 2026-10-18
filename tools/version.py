@@ -93,6 +93,12 @@ VSVersionInfo(
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Windows runner 的預設 stdout 編碼是 cp1252，中文訊息會直接炸掉
+    # （UnicodeEncodeError），所以在這裡統一改成 UTF-8。
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
     parser = argparse.ArgumentParser(description="Win-NetMon 版本號工具")
     sub = parser.add_subparsers(dest="command", required=True)
 

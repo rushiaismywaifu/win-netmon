@@ -1,8 +1,8 @@
 """Win-NetMon 入口。
 
 用法：
-    python main.py            開啟 GUI（層級 1~4，建議以系統管理員身分執行）
-    python main.py --check    環境診斷（檢查 psutil / Scapy / Npcap / 管理員權限）
+    python main.py            開啟 GUI（層級 1~5，建議以系統管理員身分執行）
+    python main.py --check    環境診斷（psutil / Scapy / Npcap / pydivert / 管理員權限）
     python main.py --cli      命令列模式：列出連線清單並即時顯示網速（README 範例 1）
 """
 from __future__ import annotations
@@ -69,6 +69,15 @@ def run_check() -> int:
     if not ok:
         print("  （不影響層級 1、2；裝好 Scapy + Npcap 並以管理員執行即可使用層級 3、4）")
 
+    from netmon.divert_engine import divert_availability, pydivert_installed
+    from netmon.win_firewall import firewall_availability
+
+    print(f"pydivert/WinDivert：{'已安裝' if pydivert_installed() else '未安裝（層級 5 即時攔截）→ pip install pydivert'}")
+    _ok, _msg = divert_availability()
+    print(f"即時封包管制（層級 5a）：{'就緒' if _ok else '不可用'} — {_msg}")
+    _ok, _msg = firewall_availability()
+    print(f"系統防火牆封鎖（層級 5b）：{'就緒' if _ok else '不可用'} — {_msg}")
+
     if SCAPY_AVAILABLE:
         ifaces = list_interfaces()
         print(f"可擷取介面（{len(ifaces)} 個）：")
@@ -109,7 +118,7 @@ def run_cli() -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Win-NetMon：Windows 網路流量監測（層級 1~4）")
+    parser = argparse.ArgumentParser(description="Win-NetMon：Windows 網路流量監測/管制（層級 1~5）")
     parser.add_argument("--check", action="store_true", help="環境診斷後結束")
     parser.add_argument("--cli", action="store_true", help="命令列模式（不開 GUI）")
     args = parser.parse_args(argv)

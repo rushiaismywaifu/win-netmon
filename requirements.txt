@@ -3,3 +3,5 @@
 # 另外必須安裝 Npcap：https://npcap.com（安裝時勾選 "Install Npcap in WinPcap API-compatible Mode"）
 psutil>=5.9
 scapy>=2.5
+# 層級 5 即時封包攔截（WinDivert 驅動的 Python 綁定，內含驅動，僅 Windows 需要）
+pydivert>=2.1; platform_system == "Windows"

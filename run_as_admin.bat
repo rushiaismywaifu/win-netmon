@@ -1,8 +1,8 @@
 @echo off
 chcp 65001 >nul
 REM ============================================================
-REM  Win-NetMon：以系統管理員身分啟動 GUI（層級 1~4 建議用這個）
-REM  封包擷取與檢視所有程式連線都需要管理員權限。
+REM  Win-NetMon：以系統管理員身分啟動 GUI（層級 1~5 建議用這個）
+REM  封包擷取、WinDivert 攔截與防火牆寫入都需要管理員權限。
 REM ============================================================
 cd /d "%~dp0"
 
@@ -13,9 +13,9 @@ if %errorlevel% neq 0 (
     exit /b
 )
 
-python -c "import psutil, scapy" 2>nul
+python -c "import psutil, scapy, pydivert" 2>nul
 if %errorlevel% neq 0 (
-    echo 正在安裝所需套件 psutil / scapy ...
+    echo 正在安裝所需套件 psutil / scapy / pydivert ...
     python -m pip install -r requirements.txt
 )
 

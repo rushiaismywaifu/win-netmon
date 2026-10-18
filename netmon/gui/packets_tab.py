@@ -146,6 +146,9 @@ class PacketsTab(ttk.Frame):
         self._menu.add_command(label="複製來源 IP", command=lambda: self._copy("src"))
         self._menu.add_command(label="複製目的 IP", command=lambda: self._copy("dst"))
         self._menu.add_command(label="複製整行摘要", command=lambda: self._copy("line"))
+        self._menu.add_separator()
+        self._menu.add_command(label="🚫 對遠端 IP 建封鎖（系統防火牆）", command=self._block_remote_firewall)
+        self._menu.add_command(label="⚡ 對遠端建即時攔截規則（WinDivert）", command=self._block_remote_divert)
 
         self.after(50, self._load_interfaces_async)
 
@@ -327,6 +330,31 @@ class PacketsTab(ttk.Frame):
             self.tree.selection_set(iid)
             self._on_select()
             self._menu.tk_popup(event.x_root, event.y_root)
+
+    # ---------- 層級 5 帶入（只填表單，不會直接封鎖） ----------
+    def _remote_of(self, rec):
+        if rec.direction == "out":
+            return rec.dst, rec.dst_port
+        return rec.src, rec.src_port
+
+    def _block_remote_firewall(self) -> None:
+        rec = self._current_record()
+        if rec is None:
+            return
+        ip, _port = self._remote_of(rec)
+        if ip:
+            self.app.request_block_remote_ip(ip)
+
+    def _block_remote_divert(self) -> None:
+        rec = self._current_record()
+        if rec is None:
+            return
+        ip, port = self._remote_of(rec)
+        process = "" if rec.process_name.startswith("(") else rec.process_name
+        if ip:
+            self.app.request_intercept_rule(remote_ip=ip,
+                                            remote_port=str(port or ""),
+                                            process_name=process)
 
     def _copy(self, what: str) -> None:
         rec = self._current_record()

@@ -112,6 +112,10 @@ class ConnectionsTab(ttk.Frame):
                              activebackground=theme.SELECT, activeforeground="#ffffff")
         self._menu.add_command(label="複製遠端 IP", command=lambda: self._copy_field("remote_ip"))
         self._menu.add_command(label="複製整行", command=self._copy_row)
+        self._menu.add_separator()
+        self._menu.add_command(label="🚫 封鎖此程式連外網（層級 5）", command=self._block_process)
+        self._menu.add_command(label="🚫 封鎖此遠端 IP（層級 5）", command=self._block_ip)
+        self._menu.add_command(label="⚡ 以此遠端建立即時攔截規則（層級 5）", command=self._intercept_remote)
 
     # ------------------------------------------------------------- 資料
     def set_data(self, records: list[ConnectionRecord]) -> None:
@@ -202,6 +206,25 @@ class ConnectionsTab(ttk.Frame):
         if rec:
             copy_text(self, f"{rec.process_name} (PID {rec.pid}) {rec.protocol} "
                             f"{rec.local} -> {rec.remote} {rec.status}")
+
+    # ---------- 層級 5 帶入（只填表單，不會直接封鎖） ----------
+    def _block_process(self) -> None:
+        rec = self._current()
+        if rec and rec.pid:
+            self.app.request_block_process(rec.pid, rec.process_name)
+
+    def _block_ip(self) -> None:
+        rec = self._current()
+        if rec and rec.remote_ip:
+            self.app.request_block_remote_ip(rec.remote_ip)
+
+    def _intercept_remote(self) -> None:
+        rec = self._current()
+        if rec and rec.remote_ip:
+            self.app.request_intercept_rule(
+                remote_ip=rec.remote_ip,
+                remote_port=str(rec.remote_port or ""),
+                process_name="" if rec.process_name.startswith("(") else rec.process_name)
 
     def _export(self) -> None:
         save_text_file(self, connections_to_csv(self._displayed or self._records),

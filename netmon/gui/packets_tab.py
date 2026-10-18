@@ -12,7 +12,10 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 from ..capture import PacketRecord, capture_availability, list_interfaces
-from ..utils import fmt_bytes, fmt_count, fmt_time, hexdump
+from ..npcap_install import (
+    NPCAP_LICENSE_NOTE, download_installer, launch_installer, verify_authenticode,
+)
+from ..utils import check_npcap, fmt_bytes, fmt_count, fmt_time, hexdump, is_windows
 from . import theme
 from .widgets import copy_text, make_tree
 
@@ -49,6 +52,23 @@ class PacketsTab(ttk.Frame):
                      "層級 1（網速）與層級 2（連線清單）仍可正常使用；層級 3 需要層級 4 的封包來歸屬流量。",
                 foreground=theme.YELLOW)
             self.avail_label.pack(anchor="w", padx=12, pady=(8, 0))
+
+        # Npcap 一鍵安裝（只在 Windows 且偵測不到 Npcap 時顯示；widget 一律先建好方便測試）
+        self._npcap_busy = False
+        npcap_row = ttk.Frame(self)
+        self.npcap_btn = ttk.Button(
+            npcap_row, text="⬇ 一鍵下載並安裝 Npcap（官方 npcap.com）",
+            style="Accent.TButton", command=self._install_npcap_clicked)
+        self.npcap_btn.pack(side="left")
+        self.npcap_status = ttk.Label(
+            npcap_row,
+            text="Npcap 受其授權限制不能隨本程式打包；這顆按鈕會在你同意後從官方下載安裝檔、"
+                 "驗證簽章再啟動它的互動安裝精靈（免費版不支援靜默安裝）。",
+            style="Muted.TLabel")
+        self.npcap_status.pack(side="left", padx=8)
+        self._npcap_missing = bool(is_windows() and not check_npcap()[0])
+        if self._npcap_missing:
+            npcap_row.pack(anchor="w", padx=12, pady=(4, 0))
 
         # ---------- 工具列 1：擷取控制 ----------
         bar1 = ttk.Frame(self)
@@ -153,6 +173,70 @@ class PacketsTab(ttk.Frame):
         self.after(50, self._load_interfaces_async)
 
     # ------------------------------------------------------------- 介面
+    # ------------------------------------------------------------- Npcap 一鍵安裝
+    def _install_npcap_clicked(self) -> None:
+        if self._npcap_busy:
+            return
+        if not messagebox.askyesno(
+                "下載並安裝 Npcap",
+                "將從官方網站 https://npcap.com 下載最新版安裝程式，"
+                "驗證數位簽章後啟動它的安裝精靈（需要你手動按完，免費版不支援靜默安裝）。\n\n"
+                + NPCAP_LICENSE_NOTE + "\n\n確定要下載並安裝嗎？", parent=self):
+            return
+        self._npcap_busy = True
+        self.npcap_btn.config(state="disabled")
+        self.npcap_status.config(text="正在查詢官網最新版本…")
+        pct_state = {"pct": -1}
+
+        def progress(downloaded: int, total: int) -> None:
+            pct = int(downloaded * 100 / total) if total else 0
+            if abs(pct - pct_state["pct"]) >= 5 or downloaded == total:
+                pct_state["pct"] = pct
+                text = (f"下載中… {fmt_bytes(downloaded)} / {fmt_bytes(total)}（{pct}%）"
+                        if total else f"下載中… {fmt_bytes(downloaded)}")
+                self.app.call_in_ui(lambda t=text: self.npcap_status.config(text=t))
+
+        def worker() -> None:
+            try:
+                path = download_installer(progress=progress)
+            except Exception as exc:  # noqa: BLE001
+                self.app.call_in_ui(lambda e=exc: self._npcap_failed(str(e)))
+                return
+            verified, detail = verify_authenticode(path)
+            self.app.call_in_ui(lambda: self._npcap_download_done(path, verified, detail))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _npcap_failed(self, message: str) -> None:
+        self._npcap_busy = False
+        self.npcap_btn.config(state="normal")
+        self.npcap_status.config(text=f"下載失敗：{message}（也可到 https://npcap.com 手動安裝）")
+        messagebox.showerror("Npcap 下載失敗", message + "\n\n你也可以到 https://npcap.com 手動下載安裝。",
+                             parent=self)
+
+    def _npcap_download_done(self, path, verified, detail: str) -> None:
+        self._npcap_busy = False
+        self.npcap_btn.config(state="normal")
+        if verified is False:
+            self.npcap_status.config(text=f"已拒絕執行（{detail}），檔案保留在：{path}")
+            messagebox.showerror("簽章驗證失敗", f"拒絕執行這個檔案：{detail}\n\n檔案位置：{path}",
+                                 parent=self)
+            return
+        if verified is None:
+            if not messagebox.askyesno(
+                    "無法驗證數位簽章",
+                    f"{detail}。\n\n檔案已由 https://npcap.com（官方 TLS 網站）下載至：\n{path}\n\n"
+                    "仍要執行這個安裝程式嗎？", parent=self):
+                self.npcap_status.config(text=f"已下載但未執行：{path}（可自行檢查後手動安裝）")
+                return
+        ok, msg = launch_installer(path)
+        if ok:
+            self.npcap_status.config(text=msg)
+            self.app.set_status(msg)
+            messagebox.showinfo("Npcap 安裝", msg, parent=self)
+        else:
+            self._npcap_failed(msg)
+
     def _load_interfaces_async(self) -> None:
         def worker():
             ifaces = list_interfaces()

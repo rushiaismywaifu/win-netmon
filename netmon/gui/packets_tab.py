@@ -65,6 +65,8 @@ class PacketsTab(ttk.Frame):
         self._by_iid: dict[str, PacketRecord] = {}   # 樹上列 iid -> 紀錄（選取查找 O(1)）
         self._proto_counts: dict[str, int] = {}
         self._ifaces: list[dict] = []
+        self._ifaces_loaded = False      # 介面清單是延遲載入的（避免啟動就載 Scapy）
+        self._ifaces_loading = False
         self._last_stat = (time.time(), 0)  # (時間, 封包數) 用於估算 pps
 
         # ---------- 可用性提示 ----------
@@ -214,7 +216,9 @@ class PacketsTab(ttk.Frame):
         self._menu.add_command(label="🚫 對遠端 IP 建封鎖（系統防火牆）", command=self._block_remote_firewall)
         self._menu.add_command(label="⚡ 對遠端建即時攔截規則（WinDivert）", command=self._block_remote_divert)
 
-        self.after(50, self._load_interfaces_async)
+        # 介面清單延遲載入：會觸發 Scapy（~0.5 秒），啟動不要馬上付這筆錢。
+        # 預熱時機：啟動 1.5 秒後（背景緒程）/ 首次切到本分頁 / 切換到 Npcap 後端。
+        self.after(1500, self.ensure_interfaces_loaded)
 
     # ------------------------------------------------------------- 介面
     # ------------------------------------------------------------- Npcap 一鍵安裝
@@ -282,12 +286,23 @@ class PacketsTab(ttk.Frame):
             self._npcap_failed(msg)
 
     def _load_interfaces_async(self) -> None:
+        self.ensure_interfaces_loaded()
+
+    def ensure_interfaces_loaded(self) -> None:
+        """需要用到 Npcap 介面清單時才列舉（背景緒程；會觸發 Scapy 延遲載入）。"""
+        if self._ifaces_loaded or self._ifaces_loading:
+            return
+        self._ifaces_loading = True
+
         def worker():
             ifaces = list_interfaces()
             self.app.call_in_ui(lambda: self._apply_interfaces(ifaces))
-        threading.Thread(target=worker, daemon=True).start()
+
+        threading.Thread(target=worker, daemon=True, name="netmon-ifaces").start()
 
     def _apply_interfaces(self, ifaces: list[dict]) -> None:
+        self._ifaces_loaded = True   # 就算拿不到也別一直重試（重複付 Scapy 載入成本）
+        self._ifaces_loading = False
         self._ifaces = ifaces
         labels = ["所有介面"] + [i["label"] for i in ifaces]
         self.iface_box.config(values=labels)
@@ -325,6 +340,8 @@ class PacketsTab(ttk.Frame):
         if not self._running_ui:
             # WinDivert 擷取所有介面，介面選單不適用
             self.iface_box.config(state="disabled" if windivert else "readonly")
+        if not windivert:
+            self.ensure_interfaces_loaded()
 
     def capture_request(self) -> dict:
         """組出 CaptureEngine.start() 的參數（依後端決定過濾欄位的語法）。"""

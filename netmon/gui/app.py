@@ -94,6 +94,8 @@ class MainApp(tk.Tk):
         notebook.add(self.packets_tab, text="  📦 封包擷取（層級 4）  ")
         notebook.add(self.firewall_tab, text="  🛡 封鎖/管制（層級 5）  ")
         notebook.add(self.help_tab, text="  📖 幫助  ")
+        # 首次切到「封包擷取」分頁時，順勢預熱 Npcap 介面清單（含 Scapy 延遲載入）
+        notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
         # 分隔線 + 狀態列
         tk.Frame(self, bg=theme.BORDER, height=1).pack(fill="x", side="bottom")
@@ -117,6 +119,14 @@ class MainApp(tk.Tk):
         self.after(300, lambda: self.refresh_connections(manual=True))
         self.after(DRAIN_MS, self._drain_loop)
         self.after(TICK_MS, self._tick_loop)
+
+    def _on_tab_changed(self, _event=None) -> None:
+        """首次切到「封包擷取」分頁時，順勢預熱 Npcap 介面清單（含 Scapy 延遲載入）。"""
+        try:
+            if self.notebook.select() == str(self.packets_tab):
+                self.packets_tab.ensure_interfaces_loaded()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------- 選單
     def _build_menu(self) -> None:

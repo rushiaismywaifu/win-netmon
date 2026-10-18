@@ -10,6 +10,7 @@ import socket
 import struct
 import time
 import unittest
+from pathlib import Path
 
 from netmon.capture import (
     SCAPY_AVAILABLE, CaptureEngine, any_capture_availability,
@@ -342,6 +343,47 @@ class TestBackendAvailability(unittest.TestCase):
             self.assertIsInstance(msg, str)
         any_ok, _ = any_capture_availability()
         self.assertEqual(any_ok, backs["npcap"][0] or backs["windivert"][0])
+
+
+class TestLazyScapy(unittest.TestCase):
+    """Scapy 延遲載入：import capture（GUI 啟動、WinDivert 路徑）不該拉 Scapy。"""
+
+    def test_import_capture_and_windivert_path_do_not_load_scapy(self):
+        from netmon import capture as capture_mod
+
+        if not capture_mod.SCAPY_AVAILABLE:
+            self.skipTest("本環境沒有安裝 Scapy")
+        code = (
+            "import sys\n"
+            "import netmon.capture as c\n"
+            "assert 'scapy' not in sys.modules, 'import netmon.capture 就載了 Scapy'\n"
+            "import socket, struct\n"
+            "ip4 = (struct.pack('>BBHHHBBH4s4s', 0x45, 0, 40, 0x1234, 0, 64, 6, 0,\n"
+            "                  socket.inet_aton('192.168.1.5'), socket.inet_aton('1.2.3.4'))\n"
+            "       + struct.pack('>HHIIBBHHH', 51000, 8123, 1, 2, (5 << 4) | 0, 0x02, 65535, 0, 0))\n"
+            "rec = c.record_from_ip_bytes(ip4, 1, {'192.168.1.5'})\n"
+            "assert rec.protocol == 'TCP', rec.protocol\n"
+            "assert rec.src_port == 51000 and rec.dst_port == 8123\n"
+            "assert 'scapy' not in sys.modules, 'WinDivert 路徑不應載入 Scapy'\n"
+            "m = c._get_scapy()          # 第一次真的需要時才載\n"
+            "assert c.SCAPY_AVAILABLE and 'scapy' in sys.modules\n"
+            "assert m.IP is not None\n"
+            "print('LAZY-OK')\n"
+        )
+        import subprocess
+        import sys as _sys
+
+        repo = Path(__file__).resolve().parents[1]
+        out = subprocess.run([_sys.executable, "-c", code], capture_output=True,
+                             text=True, cwd=repo)
+        self.assertIn("LAZY-OK", out.stdout, out.stderr[-600:])
+
+    def test_get_scapy_identity(self):
+        from netmon import capture as capture_mod
+
+        if not capture_mod.SCAPY_AVAILABLE:
+            self.skipTest("本環境沒有安裝 Scapy")
+        self.assertIs(capture_mod._get_scapy(), capture_mod._get_scapy())
 
 
 if __name__ == "__main__":

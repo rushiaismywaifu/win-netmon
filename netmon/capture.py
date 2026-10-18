@@ -13,9 +13,11 @@
 """
 from __future__ import annotations
 
+import importlib.util
 import threading
 import time
 from dataclasses import dataclass, field
+from types import ModuleType
 from typing import Callable
 
 from .ip_packet import parse_ip_packet
@@ -27,17 +29,43 @@ from .windivert_sniff import (
     translate_bpf_to_windivert,
 )
 
-try:
-    from scapy.all import (  # type: ignore
-        ARP, ICMP, ICMPv6EchoRequest, ICMPv6EchoReply, IP, IPv6, TCP, UDP,
-        AsyncSniffer, Ether, wrpcap, rdpcap,
-    )
-    from scapy.layers.inet6 import ICMPv6DestUnreach  # noqa: F401  （確保 inet6 層註冊）
-    SCAPY_AVAILABLE = True
-    SCAPY_ERROR = ""
-except Exception as exc:  # ImportError 或 Npcap 未裝時的初始化錯誤
-    SCAPY_AVAILABLE = False
-    SCAPY_ERROR = f"{type(exc).__name__}: {exc}"
+
+def _scapy_spec_exists() -> bool:
+    """用 find_spec 探測 Scapy 是否可載入（不會真的 import）。"""
+    try:
+        return importlib.util.find_spec("scapy") is not None
+    except (ImportError, ValueError):
+        return False
+
+
+# Scapy 採延遲載入：import 本模組（GUI 啟動、WinDivert 路徑、層級 1~2）不會
+# 付下 scapy 的大型 import（實測約 0.4~0.5 秒）；第一次真的需要 Npcap 擷取、
+# 介面清單、pcap 存讀或逐層解析時才載入。SCAPY_AVAILABLE 先用 find_spec
+# 判斷；屆時 import 若失敗（安裝損壞），旗標會被修正成真正原因。
+SCAPY_AVAILABLE = _scapy_spec_exists()
+SCAPY_ERROR = "" if SCAPY_AVAILABLE else "找不到 scapy 套件"
+
+_scapy_mod: ModuleType | None = None
+
+
+def _get_scapy() -> ModuleType:
+    """延遲載入 Scapy，回傳 scapy.all 模組；失敗時更新旗標後抛原例外。"""
+    global _scapy_mod, SCAPY_AVAILABLE, SCAPY_ERROR
+    if _scapy_mod is None:
+        try:
+            import scapy.all as _mod
+        except Exception as exc:
+            SCAPY_AVAILABLE = False
+            SCAPY_ERROR = f"{type(exc).__name__}: {exc}"
+            raise
+        SCAPY_AVAILABLE = True
+        SCAPY_ERROR = ""
+        try:
+            import scapy.layers.inet6  # noqa: F401 （確保 inet6 層註冊）
+        except Exception:
+            pass
+        _scapy_mod = _mod
+    return _scapy_mod
 
 
 def capture_availability() -> tuple[bool, str]:
@@ -117,12 +145,13 @@ class PacketRecord:
         """逐層解析文字（類似 Wireshark 的封包詳細資料），第一次呼叫時才產生。"""
         if self._dissection:
             return self._dissection
-        if SCAPY_AVAILABLE and self.raw:
+        if self.raw:
             try:
+                sc = _get_scapy()
                 if self.link_type == "ip":
-                    pkt = (IP if (self.raw[0] >> 4) == 4 else IPv6)(self.raw)
+                    pkt = (sc.IP if (self.raw[0] >> 4) == 4 else sc.IPv6)(self.raw)
                 else:
-                    pkt = Ether(self.raw)
+                    pkt = sc.Ether(self.raw)
                 self._dissection = pkt.show(dump=True)
                 return self._dissection
             except Exception:
@@ -154,13 +183,27 @@ def packet_to_record(pkt, index: int, local_ips: set[str],
         rec.raw = bytes(pkt)
     except Exception:
         rec.raw = b""
+
+    # 延遲載入後的 Scapy 存取（真的有執行緒需要時才會觸發第一次 import）
+    sc = None
+    if SCAPY_AVAILABLE:
+        try:
+            sc = _get_scapy()
+        except Exception:
+            sc = None
+    IP = IPv6 = TCP = UDP = ICMP = ARP = Ether = ICMPv6EchoRequest = ICMPv6EchoReply = None
+    if sc is not None:
+        IP, IPv6, TCP, UDP, ICMP, ARP, Ether = (
+            sc.IP, sc.IPv6, sc.TCP, sc.UDP, sc.ICMP, sc.ARP, sc.Ether)
+        ICMPv6EchoRequest, ICMPv6EchoReply = (sc.ICMPv6EchoRequest, sc.ICMPv6EchoReply)
+
     # 讀 DLT_RAW 的 pcap（如 WinDivert 存的）時封包沒有 Ethernet 層
-    rec.link_type = "ethernet" if (SCAPY_AVAILABLE and Ether in pkt) else "ip"
+    rec.link_type = "ethernet" if (Ether is not None and Ether in pkt) else "ip"
 
     ip_layer = None
-    if SCAPY_AVAILABLE and IP in pkt:
+    if ip_layer is None and IP is not None and IP in pkt:
         ip_layer = pkt[IP]
-    elif SCAPY_AVAILABLE and IPv6 in pkt:
+    if ip_layer is None and IPv6 is not None and IPv6 in pkt:
         ip_layer = pkt[IPv6]
 
     if ip_layer is not None:
@@ -206,7 +249,7 @@ def packet_to_record(pkt, index: int, local_ips: set[str],
                 rec.info = app_info
             elif not payload and rec.transport == "UDP":
                 rec.info = app_info or rec.info
-    elif SCAPY_AVAILABLE and ARP in pkt:
+    elif ARP is not None and ARP in pkt:
         arp = pkt[ARP]
         rec.transport = rec.protocol = "ARP"
         rec.src = str(arp.psrc)
@@ -216,10 +259,10 @@ def packet_to_record(pkt, index: int, local_ips: set[str],
         else:
             rec.info = f"{arp.psrc} 在 {arp.hwsrc}"
     else:
-        if SCAPY_AVAILABLE and Ether in pkt:
+        if Ether is not None and Ether in pkt:
             rec.src = str(pkt[Ether].src)
             rec.dst = str(pkt[Ether].dst)
-        rec.transport = rec.protocol = pkt.lastlayer().name if SCAPY_AVAILABLE else "?"
+        rec.transport = rec.protocol = pkt.lastlayer().name if sc is not None else "?"
         rec.info = "非 IP 封包"
 
     _apply_direction_and_owner(rec, local_ips, conn_index)
@@ -436,7 +479,11 @@ class CaptureEngine:
             kwargs["iface"] = iface
         if bpf_filter.strip():
             kwargs["filter"] = bpf_filter.strip()
-        sniffer = AsyncSniffer(**kwargs)
+        try:
+            sniffer = _get_scapy().AsyncSniffer(**kwargs)
+        except Exception as exc:
+            raise RuntimeError(f"Npcap 後端需要 Scapy：{exc}"
+                               "（請執行 pip install scapy）") from exc
         sniffer.start()
         # AsyncSniffer 在背景緒程開啟介面/編譯 BPF，失敗時不會在這裡拋錯，
         # 要短暫等待後檢查它的 exception / 是否還活著，錯誤才能即時呈現給使用者。
@@ -580,6 +627,8 @@ class CaptureEngine:
         """
         if not SCAPY_AVAILABLE:
             raise RuntimeError("需要 Scapy 才能儲存 pcap")
+        sc = _get_scapy()
+        IP, IPv6, Ether, wrpcap = sc.IP, sc.IPv6, sc.Ether, sc.wrpcap
         usable = [r for r in records if r.raw]
         all_ip = bool(usable) and all(r.link_type == "ip" for r in usable)
         pkts = []
@@ -609,7 +658,7 @@ class CaptureEngine:
         if not SCAPY_AVAILABLE:
             raise RuntimeError("需要 Scapy 才能讀取 pcap")
         self.refresh_local_ips()
-        raw_pkts = rdpcap(path)
+        raw_pkts = _get_scapy().rdpcap(path)
         records = []
         with self._lock:
             base = self._counter

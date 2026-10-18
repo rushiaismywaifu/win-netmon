@@ -29,6 +29,7 @@ from .dashboard_tab import DashboardTab
 from .firewall_tab import FirewallTab
 from .packets_tab import PacketsTab
 from .processes_tab import ProcessesTab
+from .help_tab import HelpTab
 
 DRAIN_MS = 200
 TICK_MS = 1000
@@ -38,7 +39,7 @@ class MainApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(f"{__app_name__} — Windows 網路流量監測（層級 1~5）")
-        self.geometry("1280x840")
+        self.geometry("1320x880")
         self.minsize(1024, 640)
         self.configure(bg=theme.BG)
 
@@ -78,11 +79,13 @@ class MainApp(tk.Tk):
         self.processes_tab = ProcessesTab(notebook, self)
         self.packets_tab = PacketsTab(notebook, self)
         self.firewall_tab = FirewallTab(notebook, self)
+        self.help_tab = HelpTab(notebook, self)
         notebook.add(self.dashboard_tab, text="📊 總覽（層級 1）")
         notebook.add(self.connections_tab, text="🔌 連線清單（層級 2）")
         notebook.add(self.processes_tab, text="🏆 程式流量（層級 3）")
         notebook.add(self.packets_tab, text="📦 封包擷取（層級 4）")
         notebook.add(self.firewall_tab, text="🛡 封鎖/管制（層級 5）")
+        notebook.add(self.help_tab, text="📖 幫助")
         self._build_statusbar()
         if self.rule_store.load_error:
             self.set_status(self.rule_store.load_error)
@@ -150,7 +153,8 @@ class MainApp(tk.Tk):
     @staticmethod
     def _make_chip(parent, text: str, color: str) -> tk.Label:
         return tk.Label(parent, text=text, bg=theme.PANEL_ALT, fg=color,
-                        font=("Consolas", 11, "bold"), padx=12, pady=6)
+                        font=("Consolas", 12, "bold"), padx=14, pady=8,
+                        highlightbackground=theme.BORDER, highlightthickness=1)
 
     def _build_statusbar(self) -> None:
         bar = tk.Frame(self, bg=theme.HEADER)

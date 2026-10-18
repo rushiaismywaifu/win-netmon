@@ -12,18 +12,18 @@ class StatCard(tk.Frame):
     """儀表板上的一張統計卡：標題 + 大數字 + 副標。"""
 
     def __init__(self, parent, fonts: dict, title: str, accent: str = theme.ACCENT):
-        super().__init__(parent, bg=theme.PANEL, highlightbackground=theme.GRID,
+        super().__init__(parent, bg=theme.CARD, highlightbackground=theme.BORDER,
                          highlightthickness=1)
-        bar = tk.Frame(self, bg=accent, width=4)
+        bar = tk.Frame(self, bg=accent, width=5)
         bar.pack(side="left", fill="y")
-        inner = tk.Frame(self, bg=theme.PANEL)
-        inner.pack(side="left", fill="both", expand=True, padx=12, pady=8)
-        tk.Label(inner, text=title, bg=theme.PANEL, fg=theme.MUTED,
+        inner = tk.Frame(self, bg=theme.CARD)
+        inner.pack(side="left", fill="both", expand=True, padx=14, pady=10)
+        tk.Label(inner, text=title, bg=theme.CARD, fg=theme.MUTED,
                  font=fonts["ui_small"]).pack(anchor="w")
-        self._value = tk.Label(inner, text="-", bg=theme.PANEL, fg=theme.TEXT,
+        self._value = tk.Label(inner, text="-", bg=theme.CARD, fg=theme.TEXT,
                                font=fonts["big_value"])
         self._value.pack(anchor="w")
-        self._sub = tk.Label(inner, text="", bg=theme.PANEL, fg=theme.MUTED,
+        self._sub = tk.Label(inner, text="", bg=theme.CARD, fg=theme.MUTED,
                              font=fonts["ui_small"])
         self._sub.pack(anchor="w")
 
@@ -36,8 +36,8 @@ class SpeedChart(tk.Canvas):
     """即時上/下行速率折線圖（自動縮放 Y 軸）。"""
 
     def __init__(self, parent, fonts: dict, height: int = 240):
-        super().__init__(parent, height=height, bg=theme.PANEL,
-                         highlightthickness=1, highlightbackground=theme.GRID)
+        super().__init__(parent, height=height, bg=theme.CARD,
+                         highlightthickness=1, highlightbackground=theme.BORDER)
         self._fonts = fonts
         self._history: list[tuple[float, float, float]] = []
         self.bind("<Configure>", lambda _e: self.draw())
@@ -106,8 +106,8 @@ class TopBarChart(tk.Canvas):
     """層級 3：Top N 程式流量水平長條圖（下行藍 + 上行橘堆疊）。"""
 
     def __init__(self, parent, fonts: dict, height: int = 196, top_n: int = 8):
-        super().__init__(parent, height=height, bg=theme.PANEL,
-                         highlightthickness=1, highlightbackground=theme.GRID)
+        super().__init__(parent, height=height, bg=theme.CARD,
+                         highlightthickness=1, highlightbackground=theme.BORDER)
         self._fonts = fonts
         self._top_n = top_n
         self._data: list[tuple[str, int, int]] = []  # (name, recv, sent)

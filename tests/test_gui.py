@@ -321,6 +321,7 @@ class _FakeTkContext:
         "netmon.gui.processes_tab",
         "netmon.gui.packets_tab",
         "netmon.gui.firewall_tab",
+        "netmon.gui.help_tab",
         "netmon.gui.app",
     )
 

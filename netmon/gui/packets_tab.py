@@ -96,9 +96,8 @@ class PacketsTab(ttk.Frame):
         self.npcap_btn.pack(side="left")
         self.npcap_status = ttk.Label(
             npcap_row,
-            text="Npcap 受其授權限制不能隨本程式打包；這顆按鈕會在你同意後從官方下載安裝檔、"
-                 "驗證簽章再啟動它的互動安裝精靈（免費版不支援靜默安裝）。沒裝也能先用 WinDivert "
-                 "後端抓 IP 層封包，裝它是為了 Ethernet/ARP 與選介面的完整功能。",
+            text="從官方下載並安裝 Npcap（需同意授權，免費版為互動安裝）。"
+                 "未安裝仍可用 WinDivert 後端；詳細說明見「📖 幫助」。",
             style="Muted.TLabel")
         self.npcap_status.pack(side="left", padx=8)
         self._npcap_missing = bool(is_windows() and not check_npcap()[0])

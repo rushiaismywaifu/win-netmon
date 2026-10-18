@@ -14,7 +14,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 from .. import __app_name__, __version__
-from ..capture import CaptureEngine, PacketRecord, capture_availability
+from ..capture import CaptureEngine, PacketRecord, any_capture_availability
 from ..connections import get_connections
 from ..divert_engine import DivertEngine, divert_availability
 from ..rule_engine import RuleEngine, build_divert_filter
@@ -121,10 +121,10 @@ class MainApp(tk.Tk):
         badge_color = theme.GREEN if admin else theme.YELLOW
         tk.Label(right, text=badge_text, bg=theme.HEADER, fg=badge_color,
                  font=self.fonts["ui_bold"]).pack(anchor="e")
-        avail_ok, _msg = capture_availability()
+        avail_ok, _msg = any_capture_availability()
         self.capture_badge = tk.Label(
             right,
-            text="封包擷取：未啟動" if avail_ok else "封包擷取：不可用（缺 Scapy/Npcap）",
+            text="封包擷取：未啟動" if avail_ok else "封包擷取：不可用（Npcap 與 WinDivert 皆未就緒）",
             bg=theme.HEADER, fg=theme.MUTED if avail_ok else theme.RED,
             font=self.fonts["ui_small"])
         self.capture_badge.pack(anchor="e")
@@ -218,9 +218,16 @@ class MainApp(tk.Tk):
         self.aggregator.update_rates()
         self.refresh_processes_view()
         engine = self.capture_engine
+        if getattr(self, "_capture_was_running", False) and not engine.running:
+            # 背景擷取緒自己停了（如 WinDivert 驅動/權限問題）：同步 UI 並告知原因
+            self.packets_tab.set_capturing_ui(False)
+            self.capture_badge.config(text="封包擷取：已中斷", fg=theme.RED)
+            if engine.last_error:
+                self.set_status(f"封包擷取已中斷：{engine.last_error}")
+        self._capture_was_running = engine.running
         elapsed = (time.time() - engine.started_at) if engine.running and engine.started_at else 0.0
         self.packets_tab.update_stats(engine.running, engine.total_packets,
-                                      engine.total_bytes, elapsed)
+                                      engine.total_bytes, elapsed, engine.backend)
         # 層級 5：自動停止到期檢查 + 攔截統計/紀錄刷新
         if self.divert_engine.deadline_exceeded():
             self.stop_divert_interception(reason="自動停止時間已到，即時攔截已停止（網路恢復正常）。")
@@ -264,24 +271,30 @@ class MainApp(tk.Tk):
         engine = self.capture_engine
         if engine.running:
             engine.stop()
+            self._capture_was_running = False
             self.packets_tab.set_capturing_ui(False)
             self.capture_badge.config(text="封包擷取：已停止", fg=theme.MUTED)
             self.set_status(f"封包擷取已停止（共 {engine.total_packets:,} 個封包）。可儲存 pcap 用 Wireshark 開啟分析。")
             self.refresh_processes_view()
             return
-        iface = self.packets_tab.selected_iface()
-        bpf = self.packets_tab.bpf_var.get()
+        self.set_status("正在開啟擷取後端（第一次載入驅動可能要等幾秒）…")
+        self.update_idletasks()
         try:
-            engine.start(iface=iface, bpf_filter=bpf)
+            engine.start(**self.packets_tab.capture_request())
         except Exception as exc:  # noqa: BLE001 - 錯誤訊息直接呈現給使用者
             messagebox.showerror(
                 "無法開始擷取", f"{exc}\n\n常見原因：\n"
-                "1) 未以系統管理員身分執行\n2) 未安裝 Npcap（https://npcap.com）\n"
-                "3) BPF 過濾語法錯誤\n4) 介面被其他程式占用", parent=self)
+                "1) 未以系統管理員身分執行\n"
+                "2) Npcap 未安裝（可用封包頁一鍵安裝，或把擷取後端改成 WinDivert 免 Npcap）\n"
+                "3) 過濾語法錯誤（Npcap 用 BPF、WinDivert 用它自己的語法）\n"
+                "4) 介面被其他程式占用", parent=self)
             return
+        self._capture_was_running = True
         self.packets_tab.set_capturing_ui(True)
-        self.capture_badge.config(text="● 封包擷取中", fg=theme.GREEN)
-        self.set_status("封包擷取中：層級 3「程式流量」與層級 4「封包擷取」即時更新中。提醒：僅監控自己的電腦/網路。")
+        backend_name = "WinDivert・IP 層" if engine.backend == "windivert" else "Npcap"
+        self.capture_badge.config(text=f"● 封包擷取中（{backend_name}）", fg=theme.GREEN)
+        extra = "（WinDivert 後端無 Ethernet/ARP）" if engine.backend == "windivert" else ""
+        self.set_status(f"封包擷取中（後端：{backend_name}）：層級 3「程式流量」與層級 4「封包擷取」即時更新中{extra}。提醒：僅監控自己的電腦/網路。")
         self.refresh_connections(manual=True)  # 立即更新歸屬索引，提高層級 3 命中率
         self.refresh_processes_view()
 

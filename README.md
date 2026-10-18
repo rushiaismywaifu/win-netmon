@@ -8,7 +8,7 @@
 | 1 | 📊 **總覽** | 即時上/下行速率圖（120 秒）、尖峰與本次總量、每一介面卡的速率與累計 | `psutil.net_io_counters` |
 | 2 | 🔌 **連線清單** | 每個程式連到哪些 IP:埠 - 可搜尋、依協定篩選、排序、解析遠端主機名、匯出 CSV | `psutil.net_connections` |
 | 3 | 🏆 **程式流量** | 每個程式的下/上行即時速率與總量排行、封包數、目前連線數 | 封包 + 連線表比對（依埠號把封包歸屬給程式） |
-| 4 | 📦 **封包擷取** | 即時封包列表、逐層解析、Hex dump、DNS 查詢、TLS SNI 網域、HTTP 請求、BPF 過濾、存/讀 `.pcap` | Npcap + Scapy |
+| 4 | 📦 **封包擷取** | 即時封包列表、逐層解析、Hex dump、DNS 查詢、TLS SNI 網域、HTTP 請求、BPF 過濾、存/讀 `.pcap` | Npcap + Scapy，或免 Npcap 的 WinDivert（IP 層） |
 | 5 | 🛡 **封鎖/管制** | (a) 即時封包攔截：封鎖/放行/限速/弱網路模擬（延遲+丟包）/轉址，可依 IP、埠、程式、DNS 網域比對；(b) 長效封鎖寫入 Windows 防火牆（依程式/IP/埠，核心強制） | WinDivert（pydivert）+ WFP（netsh advfirewall） |
 
 > ⚠ **層級 5 會實際干預網路**（丟棄/延遲/改寫封包、改寫系統防火牆）。請先看
@@ -24,14 +24,15 @@
 ### 前置安裝
 1. **Python 3.9+**：[python.org](https://www.python.org/downloads/windows/)，安裝時勾選
    「Add python.exe to PATH」與 Tcl/Tk（GUI 用，預設有勾）。
-2. **Npcap**：[npcap.com](https://npcap.com)，一路下一步即可（建議勾選
+2. **Npcap（選用，推薦）**：[npcap.com](https://npcap.com)，一路下一步即可（建議勾選
    *"Install Npcap in WinPcap API-compatible Mode"*）。Wireshark 也是用它。
-   > 只有層級 3、4 需要 Npcap；不裝的話層級 1、2、5 仍可正常使用。
+   > 層級 3、4 有兩個擷取後端：裝了 Npcap 是完整版（Ethernet/ARP、可選介面）；
+   > **不裝也能直接用**——程式會改用內建的 WinDivert 後端抓 IP 層封包（差異見層級 4 說明）。
    > 也可以先直接開啟本程式：「📦 封包擷取」分頁在偵測不到 Npcap 時會出現
    > 「⬇ 一鍵下載並安裝 Npcap」按鈕（或跑 `python main.py --install-npcap`），
    > 從官方網站下載、驗證數位簽章後啟動官方安裝精靈。
-3. **（層級 5 即時攔截）** pydivert 套件（內含 WinDivert 驅動），隨 `requirements.txt`
-   一起自動安裝，不用另外上網抓東西。
+3. **pydivert 套件**（內含 WinDivert 驅動）：層級 5 即時攔截與層級 3/4 的免 Npcap
+   擷取後端都在用它，隨 `requirements.txt` 一起自動安裝，不用另外上網抓東西。
 
 ### 啟動
 點兩下 **`run_as_admin.bat`**（會自動以系統管理員身分啟動，並在第一次自動
@@ -84,15 +85,24 @@ python main.py --check
 
 ### 📦 層級 4：封包擷取
 選好介面（預設已幫你選有 IP 的卡）按「▶ 開始擷取」：
+- **擷取後端可選**（顯示篩選左側的下拉）：「自動選擇」優先用 Npcap、沒裝時自動
+  改用 **WinDivert（免 Npcap）**。WinDivert 以 SNIFF 複本模式抓**所有介面的 IP 層
+  封包**——來源/目的/埠、DNS 查詢、TLS SNI、HTTP、方向與程式歸屬（層級 3）都照常，
+  但**沒有 Ethernet/MAC、沒有 ARP、也不能混雜模式抓別台主機的流量**；需要這些就用
+  Npcap。統計列與頂欄徽章都會顯示實際在用哪個後端。
 - 封包列表即時捲動，依協定著色（DNS 綠、TLS 紫、HTTP 藍、ICMP 紅…），含方向（↑/↓）
   與歸屬程式。
 - **BPF 過濾**（同 Wireshark 的 capture filter），有常用預設可選，也能自己寫，
-  例如 `tcp port 443`、`udp port 53`、`host 8.8.8.8`、`icmp`。
+  例如 `tcp port 443`、`udp port 53`、`host 8.8.8.8`、`icmp`。切到 WinDivert 時
+  過濾改用它自己的語法（例：`tcp and tcp.DstPort == 443`，同樣有預設）；
+  「自動選擇」退到 WinDivert 時，常見 BPF 寫法會自動轉譯，轉不了的（如 `arp`）
+  會直接跟你說，絕不會默默改成抓全部。
 - 點任何一個封包：下方左邊是**逐層解析**（Ethernet / IP / TCP / … 各欄位）、右邊是
   **Hex dump**；Info 欄會直接點出重點：DNS 在查什麼網域、TLS 的 SNI（要連去哪個網域）、
   HTTP 的方法與 Host。
 - 「顯示篩選」是擷取後在畫面上篩選（不會漏抓）；「暫停顯示」只是暫停畫面、背景續抓。
-- 「儲存 pcap」存成 `.pcap` 可直接用 Wireshark 開；「開啟 pcap」可離線分析別人抓好的檔。
+- 「儲存 pcap」存成 `.pcap` 可直接用 Wireshark 開（WinDivert 抓的存成純 IP 的
+  DLT_RAW 格式）；「開啟 pcap」可離線分析別人抓好的檔。
 - 封包上點右鍵可直接對該遠端 IP 建層級 5 封鎖/攔截規則（同樣只帶入表單待確認）。
 
 > ⚠ **HTTPS 是加密的**：你能看到 IP、埠、網域（SNI）、流量大小與時序，
@@ -177,7 +187,9 @@ build_exe.bat    :: 用 PyInstaller 產出 dist\WinNetMon.exe（雙擊時會自�
   「📦 封包擷取」分頁會出現一鍵按鈕，經你同意後**從官方 npcap.com 下載最新版、驗證 Nmap 數位簽章、
   再啟動官方互動式安裝精靈**（命令列等效：`python main.py --install-npcap`），裝完重啟本程式即可。
   也就是你仍要按完它的安裝精靈（看過並接受它的授權），但不需要自己去找下載點。
-  相較之下層級 5 的 WinDivert 驅動授權允許隨附，已隨 pydivert 一起收進 exe（`--collect-all pydivert`）。
+  相較之下 WinDivert 驅動授權允許隨附，已隨 pydivert 一起收進 exe（`--collect-all pydivert`），
+  所以 exe 其實**開了就能抓**：沒裝 Npcap 的電腦用 WinDivert 後端先抓 IP 層封包，
+  真的需要 Ethernet/ARP 或選介面再回來裝 Npcap 即可。
 
 不想自己打包也可以直接下載：[Releases](https://github.com/rushiaismywaifu/win-netmon/releases) 裡的 `WinNetMon.exe`（Windows x64 單檔版）。
 
@@ -197,7 +209,9 @@ win-netmon/
 │  ├─ speed_monitor.py      # 層級 1：整體與每介面網速
 │  ├─ connections.py        # 層級 2：連線表 + 程式名快取
 │  ├─ traffic.py            # 層級 3：連線索引 + 每程式流量彙總
-│  ├─ capture.py            # 層級 4：Scapy 擷取引擎、封包轉換、pcap 存讀
+│  ├─ capture.py            # 層級 4：雙後端擷取引擎（Npcap/Scapy、WinDivert）、pcap 存讀
+│  ├─ windivert_sniff.py    # WinDivert SNIFF 免 Npcap 後端 + BPF 子集轉譯
+│  ├─ ip_packet.py          # 純 Python IP/TCP/UDP/ICMP 解析（IP 層封包用）
 │  ├─ npcap_install.py      # Npcap 一鍵安裝（官方下載 + 驗簽 + 啟動精靈；純 stdlib）
 │  ├─ rule_engine.py        # 層級 5：管制規則比對/決策 + WinDivert 過濾字串編譯（純邏輯）
 │  ├─ divert_engine.py      # 層級 5：WinDivert 攔截執行層（recv 判斷緒 + sender 緒）
@@ -216,7 +230,8 @@ win-netmon/
    ├─ test_core.py          # 層級 1~4 核心測試：python -m unittest discover -s tests -v
    ├─ test_level5.py        # 層級 5：規則引擎/防火牆假 runner/假 WinDivert 端到端
    ├─ test_version_tools.py # 版本號工具（tools/version.py）
-   └─ test_npcap_install.py # Npcap 下載/驗簽流程（假 opener / 假 PowerShell）
+   ├─ test_npcap_install.py # Npcap 下載/驗簽流程（假 opener / 假 PowerShell）
+   └─ test_windivert_sniff.py # IP 解析/BPF 轉譯/假 handle 跑 WinDivert 後端/DLT_RAW pcap
 ```
 
 設計上核心（`speed_monitor` / `connections` / `traffic` / `capture` / `rule_engine` / `divert_engine` / `win_firewall` / `packet_info`）
@@ -232,7 +247,8 @@ python -m unittest discover -s tests -v
 層級 5 另有 34 項：埠/IP/網域規格解析、規則比對與優先順序、令牌桶限速、延遲/丟包、DNS 網域封鎖、
 轉址與回程還原、WinDivert 過濾字串編譯、防火牆指令（假 runner）、rules.json 往返、假 WinDivert 端到端（層級 1~5 共 46 項）；
 另有 7 項測 `tools/version.py`（版本號遞增／寫回／產生 exe 版本資訊），
-與 21 項測 `npcap_install.py`（官網版本解析、官方來源白名單、假下載串流/完整性、Authenticode 判斷與一站式流程），合計 74 項。
+21 項測 `npcap_install.py`（官網版本解析、官方來源白名單、假下載串流/完整性、Authenticode 判斷與一站式流程），
+與 20 項測 WinDivert 免 Npcap 後端（純 Python IP 解析、BPF 子集轉譯、假 handle 的 SNIFF/保底回注、DLT_RAW pcap 往返），合計 94 項。
 
 ---
 
@@ -267,15 +283,15 @@ python tools/version.py pyinstaller-version     :: 印出 PyInstaller 用的 ver
 | 症狀 | 解法 |
 |---|---|
 | 連線清單看不到別人/系統程式的 PID | 用 `run_as_admin.bat` 以系統管理員身分執行 |
-| 封包擷取顯示「不可用」 | 還沒裝 Npcap 或 Scapy；先跑 `python main.py --check` 它會告訴你缺哪個，缺 Npcap 時「📦 封包擷取」頁上方有一鍵官方安裝按鈕（或 `python main.py --install-npcap`） |
-| 按開始擷取出現錯誤對話框 | 常見：非管理員、Npcap 沒裝好、BPF 語法打錯、介面選錯。先把 BPF 清空、介面選「所有介面」再試 |
+| 封包擷取顯示「不可用」 | 兩個後端都沒就緒（Npcap 沒裝且 WinDivert 驅動不可用）或缺 Scapy；先跑 `python main.py --check` 它會逐後端告訴你缺哪個。只缺 Npcap 的話不用裝也能抓：擷取後端選「WinDivert（免 Npcap）」或保持自動即可（IP 層）；想要完整 Ethernet/ARP 再用「📦 封包擷取」頁上方的一鍵官方安裝（或 `python main.py --install-npcap`） |
+| 按開始擷取出現錯誤對話框 | 常見：非管理員、Npcap 沒裝好、過濾語法打錯（Npcap 用 BPF、WinDivert 用它自己的語法）、介面選錯。先把過濾清空、介面選「所有介面」再試 |
 | 抓不到封包但流量明明有在跑 | 換一張介面卡試試（選有 IPv4 的那張）；VPN 流量要選 VPN 的虛擬介面 |
 | 層級 3 都在「(未歸屬 / 系統)」 | 確認有以管理員執行（否則連線表缺 PID 無法比對）；連線剛建立的短時間流量歸不到是正常現象 |
 | HTTPS 封包只看得出網域、看不到內容 | 正常，內容有 TLS 加密（見上方說明） |
 | 防毒軟體跳警告 | 封包擷取行為敏感、自製程式無簽章，被標記很常見；本程式原始碼完全公開在本 repo |
 | 即時攔截開啟失敗 / 驅動被擋（錯誤 577、1275） | pydivert 包的是較舊的 WinDivert 簽章驅動，可能被 Win11 的「記憶體完整性」或易受攻擊驅動封鎖清單擋下。解法：改用同分頁的**系統防火牆封鎖**（完全不受影響）；或評估風險後調整 Windows 安全性設定。其餘層級不受影響 |
 | 不小心把網路擋死了怎麼辦 | 「即時攔截」：按停止或直接關閉程式即完全恢復；「系統防火牆」：到層級 5 的防火牆子分頁按「全部移除」（規則名皆為 `Win-NetMon-*`，也可在 Windows 防火牆進階設定按此字串搜尋手動刪） |
-| 想做到「一支 exe、Npcap 也自動裝好」 | 合法管道是購買 [Npcap OEM 再散布授權](https://npcap.com/oem/redist)（含靜默安裝 `/S`）；免費版禁止再散布且不支援靜默安裝。本程式內建的一鍵下載是免費管道下最接近的體驗：你確認 → 官方下載 → 驗簽 → 完成它的安裝精靈 → 重啟程式 |
+| 想做到「一支 exe、Npcap 也自動裝好」 | 合法管道是購買 [Npcap OEM 再散布授權](https://npcap.com/oem/redist)（含靜默安裝 `/S`）；免費版禁止再散布且不支援靜默安裝。不過其實不用等它：exe 內建的 **WinDivert 後端**雙擊就能抓 IP 層封包（多數日常分析夠用），需要 Ethernet/ARP 時再用內建一鍵下載（你確認 → 官方下載 → 驗簽 → 完成它的安裝精靈 → 重啟程式） |
 | 封鎖了網域還是連得上 | 屬 DoH/DoT（加密 DNS）在解析，明文 DNS 規則擋不到。可用系統防火牆直接封該服務的遠端 IP，或改擋查詢用的 53/853 等去向（副作用較大，慎用） |
 | 「依程式」即時攔截有時沒擋到第一批封包 | WinDivert 本身無程式資訊，本專案靠連線表比對歸屬（每 2 秒快照）；連線建立最初的短暫封包歸屬不到屬正常。要**確保**封住某程式請用系統防火牆的「封鎖程式」 |
 | 限速一開始衝很快 | 令牌桶初始可 burst 約 64KB，長時間速率才收斂到上限，屬正常 |

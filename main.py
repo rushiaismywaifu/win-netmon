@@ -55,7 +55,10 @@ def run_check() -> int:
         overall_ok = False
         print("tkinter：不可用（Windows 官方 Python 安裝檔有內建，安裝時請勾選 Tcl/Tk）")
 
-    from netmon.capture import SCAPY_AVAILABLE, SCAPY_ERROR, capture_availability, list_interfaces
+    from netmon.capture import (
+        SCAPY_AVAILABLE, SCAPY_ERROR, any_capture_availability, backend_availability,
+        list_interfaces,
+    )
 
     if SCAPY_AVAILABLE:
         print("Scapy：已安裝")
@@ -68,10 +71,15 @@ def run_check() -> int:
         if not npcap_ok:
             print("  → 可執行 `python main.py --install-npcap`，或在 GUI「📦 封包擷取」頁"
                   "按一鍵安裝（從官方下載，Npcap 授權不允許我們直接打包它）")
-    ok, msg = capture_availability()
+    backs = backend_availability()
+    for key, label in (("npcap", "Npcap 後端（Ethernet 完整擷取）"),
+                       ("windivert", "WinDivert 後端（免 Npcap、IP 層）")):
+        b_ok, b_msg = backs[key]
+        print(f"  {label}：{'就緒' if b_ok else '不可用'} — {b_msg}")
+    ok, msg = any_capture_availability()
     print(f"封包擷取（層級 3、4）：{'就緒' if ok else '不可用'} — {msg}")
     if not ok:
-        print("  （不影響層級 1、2；裝好 Scapy + Npcap 並以管理員執行即可使用層級 3、4）")
+        print("  （不影響層級 1、2；裝 Npcap 或備妥 pydivert/WinDivert 並以管理員執行即可）")
 
     from netmon.divert_engine import divert_availability, pydivert_installed
     from netmon.win_firewall import firewall_availability

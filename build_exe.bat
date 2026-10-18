@@ -13,9 +13,9 @@ cd /d "%~dp0"
 python -m pip install -r requirements.txt pyinstaller
 if %errorlevel% neq 0 ( echo 安裝套件失敗 & pause & exit /b 1 )
 
-REM 若 assets/icon.ico 存在則自動帶上圖示
+REM 若 assets/icon.ico 存在則自動帶上圖示並將 assets 一併收進 exe（供視窗標題列/工作列載入）
 if exist assets\icon.ico (
-    set ICON_OPT=--icon assets\icon.ico
+    set ICON_OPT=--icon assets\icon.ico --add-data "assets;assets"
 ) else (
     set ICON_OPT=
 )

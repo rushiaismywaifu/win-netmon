@@ -24,6 +24,97 @@ def make_client_hello(host=b"www.google.com"):
     return b"\x16\x03\x01" + struct.pack(">H", len(hs)) + hs
 
 
+class TestSpeedMonitor(unittest.TestCase):
+    """層級 1 取樣：一次 pernic 快照、自加總（效能）且數值與舊行為一致。"""
+
+    def _fake_counters(self, sent, recv):
+        from types import SimpleNamespace
+
+        calls: list[bool] = []
+
+        def fake(pernic=False):
+            calls.append(bool(pernic))
+            data = {
+                "eth0": SimpleNamespace(bytes_sent=sent[0], bytes_recv=recv[0],
+                                        packets_sent=None, packets_recv=None),
+                "lo": SimpleNamespace(bytes_sent=None, bytes_recv=None,
+                                      packets_sent=None, packets_recv=None),
+            }
+            return data if pernic else SimpleNamespace(
+                bytes_sent=max(v.bytes_sent or 0 for v in data.values()),
+                bytes_recv=max(v.bytes_recv or 0 for v in data.values()))
+        return fake, calls
+
+    def test_sample_single_pernic_call_and_totals(self):
+        from unittest.mock import patch
+
+        from netmon import speed_monitor as sm
+
+        sent, recv = [100], [200]
+        fake, calls = self._fake_counters(sent, recv)
+        with patch.object(sm.psutil, "net_io_counters", side_effect=fake):
+            mon = sm.SpeedMonitor()
+            s1 = mon.sample()
+            self.assertEqual(calls, [True, True])   # 初始化 + 取樣各一次（僅 pernic）
+            # None 計數的介面（lo）不算數
+            self.assertEqual((s1.total_sent, s1.total_recv), (100, 200))
+            self.assertEqual(mon.history[-1], (s1.timestamp, s1.up_rate, s1.down_rate))
+
+            sent[0], recv[0] = 1100, 1200
+            s2 = mon.sample()
+            self.assertEqual(calls, [True, True, True])
+            self.assertEqual(mon.session_sent, 1000)
+            self.assertEqual(mon.session_recv, 1000)
+            self.assertEqual(s2.total_sent, 1100)
+            self.assertTrue("eth0" in s2.per_nic)
+
+
+class TestProtocolClassify(unittest.TestCase):
+    """分類閘門：第一 byte 非 HTTP 開頭就跳過 parse_http（行為等價）。"""
+
+    def _classify(self, payload, dport=8123, transport="TCP"):
+        return classify_payload(transport, 51000, dport, payload)
+
+    def test_non_http_first_bytes_skip_http_parse(self):
+        """第一 byte 非 HTTP 開頭：不進 parse_http，改由 TLS/QUIC/兜底接手（等價行為）。"""
+        tls_app = b"\x17\x03\x03\x00\x20" + b"!" * 16   # TLS application data
+        quic = b"\xc0\x00\x00\x00\x01"                  # QUIC long header
+        self.assertEqual(self._classify(tls_app), ("TLS", "Application Data（已加密）"))
+        self.assertEqual(self._classify(quic, dport=443, transport="UDP"),
+                         ("QUIC", "QUIC（HTTP/3，已加密）"))
+
+    def test_plain_payloads_take_fallback(self):
+        cases = [
+            b"\x00\x01\x02\x03\x04",                 # 隨機二進位
+            b"ZZZZ / HTTP/1.1\r\n\r\n",              # 純文字但非 HTTP 方法開頭
+            b"\x28\x00\x00\x00",                     # 二進位（非 TLS 記錄型態）
+        ]
+        for payload in cases:
+            with self.subTest(head=payload[:4]):
+                proto, info = self._classify(payload)
+                self.assertEqual(proto, "TCP")
+                self.assertIn("bytes 資料", info)
+
+    def test_http_methods_and_response_still_classified(self):
+        cases = [
+            (b"GET /index.html HTTP/1.1\r\nHost: a.com\r\n\r\n", "GET a.com/index.html"),
+            (b"POST /p HTTP/1.1\r\nHost: b.io\r\n\r\n", "POST b.io/p"),
+            (b"HEAD / HTTP/1.1\r\n\r\n", "HEAD /"),
+            (b"PUT /v HTTP/1.1\r\nHost: d\r\n\r\n", "PUT d/v"),
+            (b"DELETE /x HTTP/1.1\r\nHost: c\r\n\r\n", "DELETE c/x"),
+            (b"PATCH /w HTTP/1.1\r\nHost: e\r\n\r\n", "PATCH e/w"),
+            (b"OPTIONS * HTTP/1.1\r\n\r\n", "OPTIONS *"),
+            (b"CONNECT 1.2.3.4:443 HTTP/1.1\r\n\r\n", "CONNECT 1.2.3.4:443"),
+            (b"TRACE /i HTTP/1.1\r\n\r\n", "TRACE /i"),
+            (b"HTTP/1.1 200 OK\r\n\r\n", "HTTP/1.1 200 OK"),
+        ]
+        for payload, want_info in cases:
+            with self.subTest(head=payload[:12]):
+                proto, info = self._classify(payload)
+                self.assertEqual(proto, "HTTP")
+                self.assertEqual(info, want_info)
+
+
 class TestUtils(unittest.TestCase):
     def test_fmt_bytes(self):
         self.assertEqual(fmt_bytes(0), "0 B")
@@ -108,6 +199,31 @@ class TestTraffic(unittest.TestCase):
         self.assertGreater(ranking[0].down_rate, 0)
         agg.reset()
         self.assertEqual(agg.ranking(), [])
+
+    def test_add_batch_equals_add_packet(self):
+        """批次 API（GUI 排空佇列用）與逐包 API 結果必須完全一致。"""
+        entries = [
+            (1, "a.exe", 100, True, "1.1.1.1:443"),
+            (1, "a.exe", 900, False, "1.1.1.1:443"),
+            (2, "b.exe", 50, True, ""),
+            (1, "a.exe", 300, True, "1.1.1.1:443"),
+            (2, "b.exe", 700, False, "8.8.8.8:53"),
+        ]
+        one = TrafficAggregator()
+        many = TrafficAggregator()
+        for pid, name, length, sent, endpoint in entries:
+            one.add_packet(pid, name, length, sent=sent, remote_endpoint=endpoint)
+        many.add_batch(entries)
+        many.add_batch(())  # 空批次也不能出事
+        def snapshot(agg):
+            return [
+                (p.pid, p.name, p.bytes_sent, p.bytes_recv, p.packets_sent,
+                 p.packets_recv, sorted(p.endpoints))
+                for p in agg.ranking()
+            ]
+
+        self.assertEqual(snapshot(one), snapshot(many))
+        self.assertEqual(one.totals(), many.totals())
 
 
 class TestScapyConversion(unittest.TestCase):

@@ -100,23 +100,34 @@ class TrafficAggregator:
 
     def add_packet(self, pid: int, name: str, length: int,
                    sent: bool, remote_endpoint: str = "") -> None:
+        self.add_batch(((pid, name, length, sent, remote_endpoint),))
+
+    def add_batch(self, entries) -> None:
+        """批次累計多個封包（供 GUI 一次排空佇列時使用）。
+
+        entries：iterable of (pid, name, length, sent, remote_endpoint)。
+        整批只取一次時間、只上一次鎖，避免逐封包鎖競爭與 time.time() 開銷
+        （擷取熱路徑上每個封包都呼叫，批次化約可省下一半以上成本）。
+        """
         now = time.time()
-        key = (pid, name)
         with self._lock:
-            proc = self._procs.get(key)
-            if proc is None:
-                proc = ProcessTraffic(pid=pid, name=name)
-                proc.first_seen = now
-                self._procs[key] = proc
-            if sent:
-                proc.bytes_sent += length
-                proc.packets_sent += 1
-            else:
-                proc.bytes_recv += length
-                proc.packets_recv += 1
-            proc.last_seen = now
-            if remote_endpoint and len(proc.endpoints) < 512:
-                proc.endpoints.add(remote_endpoint)
+            procs = self._procs
+            for pid, name, length, sent, remote_endpoint in entries:
+                key = (pid, name)
+                proc = procs.get(key)
+                if proc is None:
+                    proc = ProcessTraffic(pid=pid, name=name)
+                    proc.first_seen = now
+                    procs[key] = proc
+                if sent:
+                    proc.bytes_sent += length
+                    proc.packets_sent += 1
+                else:
+                    proc.bytes_recv += length
+                    proc.packets_recv += 1
+                proc.last_seen = now
+                if remote_endpoint and len(proc.endpoints) < 512:
+                    proc.endpoints.add(remote_endpoint)
 
     def update_rates(self) -> None:
         """與上一次快照比對，更新每個程式的上/下載速率（GUI 每秒呼叫）。"""
@@ -139,11 +150,15 @@ class TrafficAggregator:
         return items
 
     def totals(self) -> tuple[int, int, int]:
-        """回傳 (已歸屬上傳, 已歸屬下載, 未歸屬總量)。"""
+        """回傳 (已歸屬上傳, 已歸屬下載, 未歸屬總量)——單鎖一次掃完。"""
+        sent = recv = unknown = 0
         with self._lock:
-            sent = sum(p.bytes_sent for p in self._procs.values() if p.pid != UNKNOWN_PID)
-            recv = sum(p.bytes_recv for p in self._procs.values() if p.pid != UNKNOWN_PID)
-            unknown = sum(p.total_bytes for p in self._procs.values() if p.pid == UNKNOWN_PID)
+            for proc in self._procs.values():
+                if proc.pid == UNKNOWN_PID:
+                    unknown += proc.total_bytes
+                else:
+                    sent += proc.bytes_sent
+                    recv += proc.bytes_recv
         return sent, recv, unknown
 
     def connection_counts(self, records: list[ConnectionRecord]) -> dict[int, int]:

@@ -31,6 +31,10 @@ DNS_QTYPES: dict[int, str] = {
 HTTP_METHODS = ("GET ", "POST ", "PUT ", "DELETE ", "HEAD ", "OPTIONS ",
                 "PATCH ", "CONNECT ", "TRACE ")
 
+# HTTP 請求/回應第一行的可能開頭字元（9 種方法 + "HTTP/" 回應）。
+# 第一 byte 不在其中時 parse_http 必定回 None，可因此省一次 decode+判斷。
+_HTTP_START_CHARS = frozenset(b"GPDHOCT")
+
 
 # ---------------------------------------------------------------- DNS
 def _read_dns_name(data: bytes, offset: int) -> tuple[str, int] | None:
@@ -217,8 +221,12 @@ def classify_payload(transport: str, sport: int | None, dport: int | None,
                     info = f"查詢 {dns['qname']} {dns['qtype']}"
                 proto = "mDNS" if 5353 in (sport, dport) else "DNS"
                 return proto, info
-        # HTTP（明文）
-        http = parse_http(payload)
+        # HTTP（明文）：先看第一 byte，TLS/QUIC/隨機二進位大多直接跳過，
+        # 不必花一次 2048-byte decode 與字串切割（行為等價的早退）。
+        if payload[0] in _HTTP_START_CHARS:
+            http = parse_http(payload)
+        else:
+            http = None
         if http:
             if http["kind"] == "request":
                 host = http["host"] or ""

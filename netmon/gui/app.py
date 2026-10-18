@@ -66,6 +66,8 @@ class MainApp(tk.Tk):
         self._conn_thread_running = False
         self._tick_count = 0
         self._closing = False
+        self._capture_starting = False      # 擷取後端正在背景緒程開啟
+        self._capture_was_running = False   # 前一次 tick 時擷取是否在跑（偵測非預期中斷）
 
         # ---------- 選單列 ----------
         self._build_menu()
@@ -92,6 +94,8 @@ class MainApp(tk.Tk):
         notebook.add(self.packets_tab, text="  📦 封包擷取（層級 4）  ")
         notebook.add(self.firewall_tab, text="  🛡 封鎖/管制（層級 5）  ")
         notebook.add(self.help_tab, text="  📖 幫助  ")
+        # 首次切到「封包擷取」分頁時，順勢預熱 Npcap 介面清單（含 Scapy 延遲載入）
+        notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
         # 分隔線 + 狀態列
         tk.Frame(self, bg=theme.BORDER, height=1).pack(fill="x", side="bottom")
@@ -115,6 +119,14 @@ class MainApp(tk.Tk):
         self.after(300, lambda: self.refresh_connections(manual=True))
         self.after(DRAIN_MS, self._drain_loop)
         self.after(TICK_MS, self._tick_loop)
+
+    def _on_tab_changed(self, _event=None) -> None:
+        """首次切到「封包擷取」分頁時，順勢預熱 Npcap 介面清單（含 Scapy 延遲載入）。"""
+        try:
+            if self.notebook.select() == str(self.packets_tab):
+                self.packets_tab.ensure_interfaces_loaded()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------- 選單
     def _build_menu(self) -> None:
@@ -377,69 +389,80 @@ class MainApp(tk.Tk):
             pass
 
     def _drain_loop(self) -> None:
-        if self._closing:
-            return
         try:
-            while True:
-                fn = self._ui_queue.get_nowait()
-                try:
-                    fn()
-                except Exception:
-                    pass
-        except queue.Empty:
-            pass
-        batch: list[PacketRecord] = []
-        try:
-            while len(batch) < 4000:
-                batch.append(self._packet_queue.get_nowait())
-        except queue.Empty:
-            pass
-        if batch:
-            for rec in batch:
-                self.aggregator.add_packet(rec.pid, rec.process_name, rec.length, sent=(rec.direction == "out"), remote_endpoint=rec.remote_endpoint)
-            self.packets_tab.add_records(batch)
-        self.after(DRAIN_MS, self._drain_loop)
+            if self._closing:
+                return
+            try:
+                while True:
+                    fn = self._ui_queue.get_nowait()
+                    try:
+                        fn()
+                    except Exception:
+                        pass
+            except queue.Empty:
+                pass
+            batch: list[PacketRecord] = []
+            try:
+                while len(batch) < 4000:
+                    batch.append(self._packet_queue.get_nowait())
+            except queue.Empty:
+                pass
+            if batch:
+                entries = ((rec.pid, rec.process_name, rec.length, rec.direction == "out",
+                            rec.remote_endpoint) for rec in batch)
+                self.aggregator.add_batch(entries)
+                self.packets_tab.add_records(batch)
+        finally:
+            # 不論這次處理發生什麼事，都要把下一次排程排上去（心跳不能斷）
+            if not self._closing:
+                self.after(DRAIN_MS, self._drain_loop)
 
     def _tick_loop(self) -> None:
-        if self._closing:
-            return
-        self._tick_count += 1
         try:
-            sample = self.speed_monitor.sample()
-            self.dashboard_tab.update_sample(sample, self.speed_monitor)
-            # 相容新舊 chip 實作
-            for chip, rate in ((self.chip_down, sample.down_rate), (self.chip_up, sample.up_rate)):
-                text = f"↓ {fmt_rate(rate)}" if chip is self.chip_down else f"↑ {fmt_rate(rate)}"
-                try:
-                    if hasattr(chip, "value_label"):
-                        chip.value_label.config(text=text)  # type: ignore[attr-defined]
-                    else:
-                        chip.config(text=text)
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        self.aggregator.update_rates()
-        self.refresh_processes_view()
-        engine = self.capture_engine
-        if getattr(self, "_capture_was_running", False) and not engine.running:
-            self.packets_tab.set_capturing_ui(False)
+            if self._closing:
+                return
+            self._tick_count += 1
             try:
-                self.capture_badge.config(text="● 封包擷取：已中斷", fg=theme.RED)
+                sample = self.speed_monitor.sample()
+                self.dashboard_tab.update_sample(sample, self.speed_monitor)
+                # 相容新舊 chip 實作
+                for chip, rate in ((self.chip_down, sample.down_rate), (self.chip_up, sample.up_rate)):
+                    text = f"↓ {fmt_rate(rate)}" if chip is self.chip_down else f"↑ {fmt_rate(rate)}"
+                    try:
+                        if hasattr(chip, "value_label"):
+                            chip.value_label.config(text=text)  # type: ignore[attr-defined]
+                        else:
+                            chip.config(text=text)
+                    except Exception:
+                        pass
             except Exception:
                 pass
-            if engine.last_error:
-                self.set_status(f"封包擷取已中斷：{engine.last_error}")
-        self._capture_was_running = engine.running
-        elapsed = (time.time() - engine.started_at) if engine.running and engine.started_at else 0.0
-        self.packets_tab.update_stats(engine.running, engine.total_packets, engine.total_bytes, elapsed, engine.backend)
-        if self.divert_engine.deadline_exceeded():
-            self.stop_divert_interception(reason="自動停止時間已到，即時攔截已停止（網路恢復正常）。")
-        if self.divert_engine.running or self._tick_count % 2 == 0:
-            self.firewall_tab.tick_refresh()
-        if self._tick_count % 2 == 0:
-            self.refresh_connections()
-        self.after(TICK_MS, self._tick_loop)
+            self.aggregator.update_rates()
+            self.refresh_processes_view()
+            engine = self.capture_engine
+            if not self._capture_starting:
+                # 啟動中不做「中斷」判定：背景緒程的完成回呼會接手更新 UI
+                if self._capture_was_running and not engine.running:
+                    self.packets_tab.set_capturing_ui(False)
+                    try:
+                        self.capture_badge.config(text="● 封包擷取：已中斷", fg=theme.RED)
+                    except Exception:
+                        pass
+                    if engine.last_error:
+                        self.set_status(f"封包擷取已中斷：{engine.last_error}")
+                self._capture_was_running = engine.running
+            elapsed = (time.time() - engine.started_at) if engine.running and engine.started_at else 0.0
+            self.packets_tab.update_stats(engine.running, engine.total_packets, engine.total_bytes, elapsed,
+                                          engine.backend, starting=self._capture_starting)
+            if self.divert_engine.deadline_exceeded():
+                self.stop_divert_interception(reason="自動停止時間已到，即時攔截已停止（網路恢復正常）。")
+            if self.divert_engine.running or self._tick_count % 2 == 0:
+                self.firewall_tab.tick_refresh()
+            if self._tick_count % 2 == 0:
+                self.refresh_connections()
+        finally:
+            if not self._closing:
+                self.after(TICK_MS, self._tick_loop)
 
     # ------------------------------------------------------------- 連線表
     def refresh_connections(self, manual: bool = False) -> None:
@@ -474,10 +497,13 @@ class MainApp(tk.Tk):
 
     # ------------------------------------------------------------- 擷取控制
     def toggle_capture(self) -> None:
+        if self._capture_starting:
+            return  # 啟動中一律忽略（按鈕已鎖住，這裡是保底）
         engine = self.capture_engine
         if engine.running:
             engine.stop()
             self._capture_was_running = False
+            self._capture_starting = False
             self.packets_tab.set_capturing_ui(False)
             try:
                 self.capture_badge.config(text="● 封包擷取：已停止", fg=theme.MUTED)
@@ -486,16 +512,39 @@ class MainApp(tk.Tk):
             self.set_status(f"封包擷取已停止（共 {engine.total_packets:,} 個封包）。可儲存 pcap 用 Wireshark 開啟分析。")
             self.refresh_processes_view()
             return
+
+        request = self.packets_tab.capture_request()
+        self._capture_starting = True
+        self.packets_tab.set_capturing_ui(False, starting=True)
         self.set_status("正在開啟擷取後端（第一次載入驅動可能要等幾秒）…")
-        self.update_idletasks()
-        try:
-            engine.start(**self.packets_tab.capture_request())
-        except Exception as exc:  # noqa: BLE001
-            messagebox.showerror(
-                "無法開始擷取",
-                f"{exc}\n\n常見原因：\n1) 未以系統管理員身分執行\n2) Npcap 未安裝（可用封包頁一鍵安裝，或把擷取後端改成 WinDivert 免 Npcap）\n3) 過濾語法錯誤（Npcap 用 BPF、WinDivert 用它自己的語法）\n4) 介面被其他程式占用",
-                parent=self,
-            )
+
+        def worker() -> None:
+            # 這個緒程只負責「開後端」（含等驅動就緒的 sleep），
+            # 完成後把結果丟回 GUI 主緒程，畫面才不會在這幾百毫秒內凍結。
+            try:
+                engine.start(**request)
+            except Exception as exc:  # noqa: BLE001
+                detail = str(exc)
+                self.call_in_ui(lambda: self._capture_start_failed(detail))
+                return
+            if self._closing:  # 啟動期間使用者關掉了程式
+                try:
+                    engine.stop()
+                except Exception:
+                    pass
+                return
+            self.call_in_ui(self._capture_start_done)
+
+        threading.Thread(target=worker, daemon=True, name="netmon-capture-start").start()
+
+    def _capture_start_done(self) -> None:
+        """背景啟動成功（GUI 主緒程）：切換成「擷取中」狀態。"""
+        if self._closing:
+            return
+        self._capture_starting = False
+        engine = self.capture_engine
+        if not engine.running:  # 啟動後立刻停止的保底
+            self.packets_tab.set_capturing_ui(False)
             return
         self._capture_was_running = True
         self.packets_tab.set_capturing_ui(True)
@@ -508,6 +557,19 @@ class MainApp(tk.Tk):
         self.set_status(f"封包擷取中（後端：{backend_name}）：層級 3「程式流量」與層級 4「封包擷取」即時更新中{extra}。提醒：僅監控自己的電腦/網路。")
         self.refresh_connections(manual=True)
         self.refresh_processes_view()
+
+    def _capture_start_failed(self, message: str) -> None:
+        """背景啟動失敗（GUI 主緒程）：還原 UI 並顯示原因。"""
+        if self._closing:
+            return
+        self._capture_starting = False
+        self.packets_tab.set_capturing_ui(False)
+        self.set_status("封包擷取啟動失敗，詳見對話框說明。")
+        messagebox.showerror(
+            "無法開始擷取",
+            f"{message}\n\n常見原因：\n1) 未以系統管理員身分執行\n2) Npcap 未安裝（可用封包頁一鍵安裝，或把擷取後端改成 WinDivert 免 Npcap）\n3) 過濾語法錯誤（Npcap 用 BPF、WinDivert 用它自己的語法）\n4) 介面被其他程式占用",
+            parent=self,
+        )
 
     # ------------------------------------------------------------- 層級 5 控制
     def toggle_divert_interception(self) -> None:

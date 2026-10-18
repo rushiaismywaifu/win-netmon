@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import socket
 import threading
+import time
 import tkinter as tk
 from tkinter import ttk
 
@@ -12,32 +13,57 @@ from .widgets import copy_text, make_tree, save_text_file
 
 
 class HostnameResolver:
-    """反向 DNS 查詢（背景執行、快取結果，避免卡住 UI）。"""
+    """反向 DNS 查詢（背景執行、快取結果，避免卡住 UI）。
+
+    快取有 TTL：正向結果 10 分鐘、查無名稱（負向）只留 3 分鐘，
+    避免字典無限成長與「永久顯示 -」；查詢繼續用 daemon thread
+    （立刻結束的假 lookup 可注入做測試）。
+    """
+
+    TTL_POSITIVE = 600.0
+    TTL_NEGATIVE = 300.0
+    MAX_CACHE = 512
 
     def __init__(self):
-        self._cache: dict[str, str] = {}
+        self._cache: dict[str, tuple[str, float]] = {}  # ip -> (host, cached_at)
         self._pending: set[str] = set()
         self._lock = threading.Lock()
+        self._lookup = socket.gethostbyaddr  # 可替換（測試注入）
+
+    @classmethod
+    def _ttl_for(cls, host: str) -> float:
+        return cls.TTL_POSITIVE if host and host != "-" else cls.TTL_NEGATIVE
 
     def get(self, ip: str) -> str:
         if not ip or ip in ("0.0.0.0", "::", "127.0.0.1", "::1"):
             return "-"
+        now = time.time()
         with self._lock:
-            if ip in self._cache:
-                return self._cache[ip]
-            if ip in self._pending or len(self._pending) > 32:
-                return "查詢中…"
+            if len(self._cache) > self.MAX_CACHE:
+                # 清掃過期項目（正在查詢的不掃），字典不會無限成長
+                for k, (_host, at) in list(self._cache.items()):
+                    if k not in self._pending and now - at >= self._ttl_for(_host):
+                        self._cache.pop(k, None)
+            cached = self._cache.get(ip)
+            host = cached[0] if cached else ""
+            display = host if host else "查詢中…"
+            if ip in self._pending:
+                return display          # 正在查詢，先維持舊值／查詢中
+            if cached is not None and now - cached[1] < self._ttl_for(host):
+                return display          # 快取仍有效
+            if len(self._pending) > 32:
+                return display
             self._pending.add(ip)
         threading.Thread(target=self._resolve, args=(ip,), daemon=True).start()
-        return "查詢中…"
+        return display
 
     def _resolve(self, ip: str) -> None:
         try:
-            host = socket.gethostbyaddr(ip)[0]
+            host = self._lookup(ip)[0]
         except (OSError, UnicodeError):
             host = "-"
         with self._lock:
-            self._cache[ip] = host
+            self._cache[ip] = (host, time.time())
             self._pending.discard(ip)
 
 
@@ -162,7 +188,6 @@ class ConnectionsTab(ttk.Frame):
             if selected_key is not None and rec.tuple_key() == selected_key:
                 self.tree.selection_set(iid)
                 self._sel_key = selected_key
-        self._displayed_before = out
         self.count_label.config(text=f"共 {len(out)} 條連線（全部 {len(self._records)} 條）")
 
     # ------------------------------------------------------------- 互動

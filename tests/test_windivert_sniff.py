@@ -5,10 +5,12 @@ PacketRecord（分類/方向/程式歸屬）、CaptureEngine 以假 handle 跑
 WinDivert 後端（SNIFF 不回注、非 SNIFF 逐包原樣回注保底、開局錯誤
 浮現、背景中斷寫入 last_error）、DLT_RAW pcap 存讀往返。
 """
+import ipaddress
 import socket
 import struct
 import time
 import unittest
+from pathlib import Path
 
 from netmon.capture import (
     SCAPY_AVAILABLE, CaptureEngine, any_capture_availability,
@@ -83,6 +85,24 @@ class TestParseIPPacket(unittest.TestCase):
         with_ext = struct.pack(">IHBB", 0x60000000, len(body), 0, 64) + src + dst + body
         p2 = parse_ip_packet(with_ext)
         self.assertEqual((p2.transport, p2.src_port, p2.payload), ("UDP", 1111, DNS_QUERY))
+
+    def test_ipv6_address_text_is_rfc5952_and_parsable(self):
+        """位址文字化用 socket.inet_ntop：零壓縮正確、且可被 ipaddress 解回同位址。"""
+        for src_text, dst_text in (
+            ("2001:db8::1", "::ffff:192.168.1.5"),
+            ("fe80::1", "2001:4860:4860::8888"),
+            ("::1", "2001:0:0:2:0:0:0:3"),
+            ("::", "2001:db8:0:0:1:0:0:1"),
+        ):
+            with self.subTest(src=src_text, dst=dst_text):
+                src = socket.inet_pton(socket.AF_INET6, src_text)
+                dst = socket.inet_pton(socket.AF_INET6, dst_text)
+                p = parse_ip_packet(
+                    struct.pack(">IHBB", 0x60000000, 0, 59, 64) + src + dst)
+                self.assertEqual(p.src, socket.inet_ntop(socket.AF_INET6, src))
+                self.assertEqual(p.dst, socket.inet_ntop(socket.AF_INET6, dst))
+                self.assertEqual(ipaddress.IPv6Address(p.src).packed, src)
+                self.assertEqual(ipaddress.IPv6Address(p.dst).packed, dst)
 
     def test_truncated_and_garbage(self):
         self.assertIsNone(parse_ip_packet(b""))
@@ -323,6 +343,47 @@ class TestBackendAvailability(unittest.TestCase):
             self.assertIsInstance(msg, str)
         any_ok, _ = any_capture_availability()
         self.assertEqual(any_ok, backs["npcap"][0] or backs["windivert"][0])
+
+
+class TestLazyScapy(unittest.TestCase):
+    """Scapy 延遲載入：import capture（GUI 啟動、WinDivert 路徑）不該拉 Scapy。"""
+
+    def test_import_capture_and_windivert_path_do_not_load_scapy(self):
+        from netmon import capture as capture_mod
+
+        if not capture_mod.SCAPY_AVAILABLE:
+            self.skipTest("本環境沒有安裝 Scapy")
+        code = (
+            "import sys\n"
+            "import netmon.capture as c\n"
+            "assert 'scapy' not in sys.modules, 'import netmon.capture 就載了 Scapy'\n"
+            "import socket, struct\n"
+            "ip4 = (struct.pack('>BBHHHBBH4s4s', 0x45, 0, 40, 0x1234, 0, 64, 6, 0,\n"
+            "                  socket.inet_aton('192.168.1.5'), socket.inet_aton('1.2.3.4'))\n"
+            "       + struct.pack('>HHIIBBHHH', 51000, 8123, 1, 2, (5 << 4) | 0, 0x02, 65535, 0, 0))\n"
+            "rec = c.record_from_ip_bytes(ip4, 1, {'192.168.1.5'})\n"
+            "assert rec.protocol == 'TCP', rec.protocol\n"
+            "assert rec.src_port == 51000 and rec.dst_port == 8123\n"
+            "assert 'scapy' not in sys.modules, 'WinDivert 路徑不應載入 Scapy'\n"
+            "m = c._get_scapy()          # 第一次真的需要時才載\n"
+            "assert c.SCAPY_AVAILABLE and 'scapy' in sys.modules\n"
+            "assert m.IP is not None\n"
+            "print('LAZY-OK')\n"
+        )
+        import subprocess
+        import sys as _sys
+
+        repo = Path(__file__).resolve().parents[1]
+        out = subprocess.run([_sys.executable, "-c", code], capture_output=True,
+                             text=True, cwd=repo)
+        self.assertIn("LAZY-OK", out.stdout, out.stderr[-600:])
+
+    def test_get_scapy_identity(self):
+        from netmon import capture as capture_mod
+
+        if not capture_mod.SCAPY_AVAILABLE:
+            self.skipTest("本環境沒有安裝 Scapy")
+        self.assertIs(capture_mod._get_scapy(), capture_mod._get_scapy())
 
 
 if __name__ == "__main__":

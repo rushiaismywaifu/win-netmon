@@ -45,8 +45,11 @@ class SpeedMonitor:
     """每秒取樣一次，保留歷史資料供圖表繪製。"""
 
     def __init__(self, history_seconds: int = 120):
-        self._prev_total = psutil.net_io_counters()
         self._prev_nic = psutil.net_io_counters(pernic=True)
+        self._prev_total_sent = sum(c.bytes_sent for c in self._prev_nic.values()
+                                    if c.bytes_sent is not None)
+        self._prev_total_recv = sum(c.bytes_recv for c in self._prev_nic.values()
+                                    if c.bytes_recv is not None)
         self._prev_time = time.time()
         # 歷史：(timestamp, up_rate, down_rate)
         self.history: deque[tuple[float, float, float]] = deque(maxlen=history_seconds)
@@ -59,38 +62,49 @@ class SpeedMonitor:
     def sample(self) -> SpeedSample:
         now = time.time()
         elapsed = now - self._prev_time
-        total = psutil.net_io_counters()
+        # 一次取樣就好：net_io_counters() 的彙總值其實就是 pernic 的加總，
+        # 少一次系統層呼叫（每次 ~100 µs，GUI 每秒取樣）。
         per_nic_raw = psutil.net_io_counters(pernic=True)
+        sent_total = recv_total = 0
+        for counters in per_nic_raw.values():
+            if counters.bytes_sent is not None:
+                sent_total += counters.bytes_sent
+            if counters.bytes_recv is not None:
+                recv_total += counters.bytes_recv
 
-        up_rate = _diff(total.bytes_sent, self._prev_total.bytes_sent, elapsed)
-        down_rate = _diff(total.bytes_recv, self._prev_total.bytes_recv, elapsed)
+        up_rate = _diff(sent_total, self._prev_total_sent, elapsed)
+        down_rate = _diff(recv_total, self._prev_total_recv, elapsed)
 
         per_nic: dict[str, NicSample] = {}
         for name, counters in per_nic_raw.items():
             old = self._prev_nic.get(name)
+            # 部分介面（Linux 上常見）計數是 None，沒個別值就不算該 NIC 速率
             nic = NicSample(
                 name=name,
                 total_sent=counters.bytes_sent,
                 total_recv=counters.bytes_recv,
-                up_rate=_diff(counters.bytes_sent, old.bytes_sent, elapsed) if old else 0.0,
-                down_rate=_diff(counters.bytes_recv, old.bytes_recv, elapsed) if old else 0.0,
+                up_rate=_diff(counters.bytes_sent or 0, (old.bytes_sent or 0) if old else 0,
+                              elapsed),
+                down_rate=_diff(counters.bytes_recv or 0, (old.bytes_recv or 0) if old else 0,
+                                elapsed),
             )
             per_nic[name] = nic
 
         result = SpeedSample(
             timestamp=now, up_rate=up_rate, down_rate=down_rate,
-            total_sent=total.bytes_sent, total_recv=total.bytes_recv,
+            total_sent=sent_total, total_recv=recv_total,
             per_nic=per_nic,
         )
         self.peak_up = max(self.peak_up, up_rate)
         self.peak_down = max(self.peak_down, down_rate)
-        sent_delta = total.bytes_sent - self._prev_total.bytes_sent
-        recv_delta = total.bytes_recv - self._prev_total.bytes_recv
+        sent_delta = sent_total - self._prev_total_sent
+        recv_delta = recv_total - self._prev_total_recv
         self.session_sent += max(sent_delta, 0)
         self.session_recv += max(recv_delta, 0)
         self.history.append((now, up_rate, down_rate))
 
-        self._prev_total = total
+        self._prev_total_sent = sent_total
+        self._prev_total_recv = recv_total
         self._prev_nic = per_nic_raw
         self._prev_time = now
         self.last = result

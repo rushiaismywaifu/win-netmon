@@ -71,6 +71,44 @@ class TestPortIpDomainSpecs(unittest.TestCase):
         self.assertFalse(ip_in_spec("192.168.1.1", net))
         self.assertTrue(ip_in_spec("1.1.1.1", None))
 
+    def test_ip_in_spec_cases_and_cache(self):
+        """位址字串解析有快取（層級 5 熱路徑），且邊界行為與直接解析一致。"""
+        from netmon import rule_engine
+
+        # LRU 快取命中：同字串回同一物件（同位址字串不重複做 ipaddress 解析）
+        self.assertIs(rule_engine._parsed_address("1.2.3.4"),
+                      rule_engine._parsed_address("1.2.3.4"))
+        # IPv6 scope id（fe80::1%12）與 IPv4-mapped 位址照舊可比對
+        self.assertTrue(ip_in_spec("fe80::1%12", parse_ip_spec("fe80::/16")))
+        self.assertTrue(ip_in_spec("::ffff:1.2.3.4", parse_ip_spec("::ffff:0:0/96")))
+        # 不同版本/壞字串照舊回 False
+        self.assertFalse(ip_in_spec("::1", parse_ip_spec("1.2.3.0/24")))
+        self.assertFalse(ip_in_spec("bogus-ip", parse_ip_spec("1.2.3.0/24")))
+        self.assertTrue(ip_in_spec("bogus-ip", None))  # network None = 不限
+
+    def test_evaluate_uses_cached_address_objects(self):
+        """同一封包反覆 evaluate，位址字串只應解析一次（LRU 快取生效）。"""
+        import netmon.rule_engine as rule_engine_module
+        from unittest.mock import patch
+
+        rule_engine_module._parsed_address.cache_clear()
+        calls: list[str] = []
+        real_ip_address = rule_engine_module.ipaddress.ip_address
+
+        def counting_ip_address(text):
+            calls.append(text)
+            return real_ip_address(text)
+
+        eng = RuleEngine([InterceptRule(name="block-2.2", action="block",
+                                        remote_ip="2.2.2.0/24")])
+        with patch("netmon.rule_engine.ipaddress.ip_address",
+                   side_effect=counting_ip_address):
+            for _ in range(5):
+                record = eng.evaluate(view())
+                self.assertEqual(record.verdict, VERDICT_DROP)
+        self.assertEqual(calls, ["2.2.2.2"])  # 5 次評估只解析 1 次
+        rule_engine_module._parsed_address.cache_clear()
+
     def test_domain_matches(self):
         self.assertTrue(domain_matches("doubleclick.net", "doubleclick.net"))
         self.assertTrue(domain_matches("ads.doubleclick.net", "doubleclick.net"))

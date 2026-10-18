@@ -96,11 +96,12 @@ class ProcessesTab(ttk.Frame):
                 capturing: bool) -> None:
         self._conn_counts = conn_counts
         self.SORT_KEYS["conns"] = lambda p: self._conn_counts.get(p.pid, 0)
-        items = aggregator.ranking()
+        ranked = aggregator.ranking()          # 已依總流量排序（給圖表用）
+        items = list(ranked)
         items.sort(key=self.SORT_KEYS.get(self._sort_col, self.SORT_KEYS["total"]),
                    reverse=self._sort_reverse)
         self._items = items
-        self.chart.set_data(aggregator.ranking())  # 圖表固定依總流量排
+        self.chart.set_data(ranked)            # 圖表固定依總流量排
 
         sent, recv, unknown = aggregator.totals()
         attributed = sent + recv

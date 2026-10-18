@@ -18,6 +18,7 @@ class DashboardTab(ttk.Frame):
         fonts = app.fonts
         self._nic_cache: list[dict] = []
         self._nic_cache_at = 0.0
+        self._nic_render_at = 0.0   # 明細表重繪節流（約 2 秒一次就夠了）
 
         # --- 統計卡 ---
         cards = ttk.Frame(self)
@@ -67,6 +68,9 @@ class DashboardTab(ttk.Frame):
 
     def _update_nics(self, sample: SpeedSample) -> None:
         now = time.time()
+        if now - self._nic_render_at < 1.9:
+            return  # 節流：速率本來就不是逐秒變化，整表重繪沒必要每秒做
+        self._nic_render_at = now
         if now - self._nic_cache_at > 10 or not self._nic_cache:
             try:
                 self._nic_cache = nic_details()

@@ -106,6 +106,15 @@ class _FakeTk(_FakeWidget):
     def clipboard_append(self, _text: str) -> None:
         pass
 
+    def iconphoto(self, default: bool, img) -> None:
+        self._iconphoto_args = (default, img)
+
+    def iconbitmap(self, bitmap: str | None = None, default: str | None = None) -> None:
+        if bitmap is not None:
+            self._iconbitmap_arg = bitmap
+        if default is not None:
+            self._iconbitmap_default = default
+
 
 class _FakeCanvas(_FakeWidget):
     def delete(self, *_args) -> None:
@@ -270,6 +279,7 @@ def _build_fake_tk_modules() -> dict[str, types.ModuleType]:
     fake_tk.Widget = _FakeWidget
     fake_tk.StringVar = lambda value="", **kw: _FakeVar(value, **kw)
     fake_tk.BooleanVar = lambda value=False, **kw: _FakeVar(value, **kw)
+    fake_tk.PhotoImage = lambda **kw: _FakeWidget(**kw)
 
     fake_ttk = types.ModuleType("tkinter.ttk")
     fake_ttk.Frame = _FakeWidget
@@ -394,6 +404,7 @@ class TestMakeTreeOptions(unittest.TestCase):
                     self.assertNotIn("command", app.firewall_tab.rules_tree.headings["name"])
                     self.assertNotIn("command", app.firewall_tab.fw_tree.headings["label"])
                     self.assertNotIn("command", app.firewall_tab.log_tree.headings["time"])
+                    self.assertTrue(getattr(app, "_iconbitmap_arg", "").endswith("icon.ico"))
                 finally:
                     app._on_close()
 
@@ -421,10 +432,9 @@ class TestPacketsTabTrim(unittest.TestCase):
                     app._on_close()
 
     def test_full_buffer_trim_is_incremental(self):
-        packets_mod = importlib.import_module("netmon.gui.packets_tab")
-        limit = packets_mod.MAX_RECORDS
-
         def check(app):
+            packets_mod = importlib.import_module("netmon.gui.packets_tab")
+            limit = packets_mod.MAX_RECORDS
             tab = app.packets_tab
             total = limit + 3000
             records = [self._record(i) for i in range(total)]
@@ -443,10 +453,9 @@ class TestPacketsTabTrim(unittest.TestCase):
         self._with_app(check)
 
     def test_batch_larger_than_limit_skips_trimmed_rows(self):
-        packets_mod = importlib.import_module("netmon.gui.packets_tab")
-        limit = packets_mod.MAX_RECORDS
-
         def check(app):
+            packets_mod = importlib.import_module("netmon.gui.packets_tab")
+            limit = packets_mod.MAX_RECORDS
             tab = app.packets_tab
             records = [self._record(i) for i in range(limit + 500)]
             tab.add_records(records)  # 單批就超過上限

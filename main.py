@@ -14,9 +14,15 @@ import time
 
 
 def _enable_dpi_awareness() -> None:
-    """（Windows）在高 DPI 螢幕上讓 GUI 不要糊掉。"""
+    """（Windows）在高 DPI 螢幕上讓 GUI 不要糊掉，並設定 AppUserModelID 讓工作列顯示專屬圖示。"""
     if not sys.platform.startswith("win"):
         return
+    try:
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("WinNetMon.App")  # type: ignore[attr-defined]
+    except Exception:
+        pass
     try:
         import ctypes
 

@@ -63,6 +63,8 @@ jobs:
         run: |
           python -m PyInstaller --noconfirm --clean --onefile --windowed --uac-admin `
             --name WinNetMon `
+            --icon assets/icon.ico `
+            --add-data "assets;assets" `
             --version-file version_info.txt `
             --collect-submodules scapy `
             --collect-all pydivert `

@@ -646,34 +646,48 @@ class MainApp(tk.Tk):
         self.connections_tab.set_search(process_name)
 
     def _set_app_icon(self) -> None:
-        """嘗試載入應用程式圖示（assets/icon.png），失敗則忽略（無頭測試環境）。"""
+        """嘗試載入應用程式圖示（assets/icon.ico 與 assets/icon.png），失敗則忽略（無頭測試環境）。"""
         try:
+            import sys
             from pathlib import Path
 
-            # 可能的圖示位置（依執行目錄不同）
-            candidates = [
-                Path(__file__).resolve().parents[2] / "assets" / "icon.png",
-                Path(__file__).resolve().parents[2] / "assets" / "icon-simple.png",
-                Path.cwd() / "assets" / "icon.png",
-            ]
-            icon_path = next((p for p in candidates if p.is_file()), None)
-            if icon_path is None:
-                return
-            # Tkinter 僅原生支援 PNG/GIF，SVG 需轉檔；這裡用 PhotoImage 載入 PNG
-            img = tk.PhotoImage(file=str(icon_path))
-            # 保留引用避免被 GC
-            self._icon_img = img  # type: ignore[attr-defined]
+            roots: list[Path] = []
+            meipass = getattr(sys, "_MEIPASS", None)
+            if meipass:
+                roots.append(Path(meipass))
+            roots.extend([
+                Path(__file__).resolve().parents[2],
+                Path(sys.executable).resolve().parent,
+                Path.cwd(),
+            ])
+
+            # Tkinter PhotoImage 載入 PNG（跨平台與子視窗圖示）
             try:
-                self.iconphoto(True, img)
+                icon_path = next(
+                    (
+                        r / "assets" / name
+                        for r in roots
+                        for name in ("icon.png", "icon-256.png", "icon-simple.png")
+                        if (r / "assets" / name).is_file()
+                    ),
+                    None,
+                )
+                if icon_path is not None:
+                    img = tk.PhotoImage(file=str(icon_path))
+                    # 保留引用避免被 GC
+                    self._icon_img = img  # type: ignore[attr-defined]
+                    self.iconphoto(True, img)
             except Exception:
                 pass
-            # Windows 工作列圖示（若有 .ico 也可加）
+
+            # Windows 視窗標題列與工作列圖示（.ico 放最後，在 Windows 上優先使用多解析度 ICO）
             try:
-                ico_candidates = [
-                    Path(__file__).resolve().parents[2] / "assets" / "icon.ico",
-                ]
-                ico = next((p for p in ico_candidates if p.is_file()), None)
-                if ico:
+                ico = next(
+                    (r / "assets" / "icon.ico" for r in roots if (r / "assets" / "icon.ico").is_file()),
+                    None,
+                )
+                if ico is not None:
+                    self.iconbitmap(default=str(ico))
                     self.iconbitmap(str(ico))
             except Exception:
                 pass

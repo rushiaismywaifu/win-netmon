@@ -117,7 +117,18 @@ def run_cli() -> int:
     return 0
 
 
+def _ensure_std_streams() -> None:
+    """PyInstaller --windowed 模式下 stdout/stderr 可能為 None，補上緩衝避免寫入時拋錯。"""
+    import io
+
+    if sys.stdout is None:
+        sys.stdout = io.StringIO()
+    if sys.stderr is None:
+        sys.stderr = io.StringIO()
+
+
 def main(argv: list[str] | None = None) -> int:
+    _ensure_std_streams()
     parser = argparse.ArgumentParser(description="Win-NetMon：Windows 網路流量監測/管制（層級 1~5）")
     parser.add_argument("--check", action="store_true", help="環境診斷後結束")
     parser.add_argument("--cli", action="store_true", help="命令列模式（不開 GUI）")

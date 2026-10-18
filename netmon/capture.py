@@ -1,6 +1,9 @@
-"""層級 4：擷取並解析封包內容（Npcap + Scapy）。
+"""層級 4：擷取並解析封包內容（雙後端：Npcap/Scapy 或 WinDivert SNIFF）。
 
-- 以 Scapy 的 AsyncSniffer 在背景擷取，即時轉成 PacketRecord。
+- 後端 A（Npcap + Scapy）：AsyncSniffer 在背景擷取完整 Ethernet 框。
+- 後端 B（WinDivert SNIFF）：免安裝 Npcap，驅動隨 pydivert 打包；
+  IP 層被動複本擷取（無 Ethernet/ARP），見 netmon.windivert_sniff。
+- backend="auto"（預設）：優先 Npcap，缺 Npcap 時自動退回 WinDivert。
 - 每個封包會分類協定（DNS / TLS(SNI) / HTTP / QUIC …）、判斷方向、
   並透過層級 3 的連線表索引歸屬到程式。
 - 支援 BPF 過濾語法（同 Wireshark capture filter）、存/讀 .pcap 檔。
@@ -15,9 +18,14 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable
 
+from .ip_packet import parse_ip_packet
 from .packet_info import classify_payload
 from .traffic import UNKNOWN_NAME, UNKNOWN_PID, ConnectionIndex
 from .utils import check_npcap, get_local_ips, is_windows
+from .windivert_sniff import (
+    open_sniff_handle, packet_direction, packet_raw_bytes, sniff_availability,
+    translate_bpf_to_windivert,
+)
 
 try:
     from scapy.all import (  # type: ignore
@@ -42,6 +50,31 @@ def capture_availability() -> tuple[bool, str]:
     return True, "Scapy + Npcap 就緒" if is_windows() else "Scapy 就緒"
 
 
+BACKEND_NPCAP = "npcap"
+BACKEND_WINDIVERT = "windivert"
+BACKEND_AUTO = "auto"
+
+
+def backend_availability() -> dict[str, tuple[bool, str]]:
+    """各擷取後端的就緒狀態：{"npcap": (ok, 說明), "windivert": (ok, 說明)}。"""
+    return {
+        BACKEND_NPCAP: capture_availability(),
+        BACKEND_WINDIVERT: sniff_availability(),
+    }
+
+
+def any_capture_availability() -> tuple[bool, str]:
+    """任一擷取後端可用就回傳 True（說明會註明用的是哪一條路）。"""
+    backs = backend_availability()
+    npc_ok, npc_msg = backs[BACKEND_NPCAP]
+    wd_ok, wd_msg = backs[BACKEND_WINDIVERT]
+    if npc_ok:
+        return True, npc_msg
+    if wd_ok:
+        return True, f"Npcap 未就緒，改用 WinDivert：{wd_msg}"
+    return False, f"Scapy/Npcap：{npc_msg}；WinDivert：{wd_msg}"
+
+
 @dataclass
 class PacketRecord:
     """一個已解析封包（供 GUI 表格與詳細檢視使用）。"""
@@ -61,6 +94,7 @@ class PacketRecord:
     process_name: str = UNKNOWN_NAME
     raw: bytes = b""
     payload: bytes = b""
+    link_type: str = "ethernet"      # ethernet（含 L2 標頭）/ ip（WinDivert，僅 IP 本體）
     _dissection: str = field(default="", repr=False)
 
     @property
@@ -85,7 +119,10 @@ class PacketRecord:
             return self._dissection
         if SCAPY_AVAILABLE and self.raw:
             try:
-                pkt = Ether(self.raw)
+                if self.link_type == "ip":
+                    pkt = (IP if (self.raw[0] >> 4) == 4 else IPv6)(self.raw)
+                else:
+                    pkt = Ether(self.raw)
                 self._dissection = pkt.show(dump=True)
                 return self._dissection
             except Exception:
@@ -117,6 +154,8 @@ def packet_to_record(pkt, index: int, local_ips: set[str],
         rec.raw = bytes(pkt)
     except Exception:
         rec.raw = b""
+    # 讀 DLT_RAW 的 pcap（如 WinDivert 存的）時封包沒有 Ethernet 層
+    rec.link_type = "ethernet" if (SCAPY_AVAILABLE and Ether in pkt) else "ip"
 
     ip_layer = None
     if SCAPY_AVAILABLE and IP in pkt:
@@ -183,8 +222,17 @@ def packet_to_record(pkt, index: int, local_ips: set[str],
         rec.transport = rec.protocol = pkt.lastlayer().name if SCAPY_AVAILABLE else "?"
         rec.info = "非 IP 封包"
 
-    # ---- 方向與程式歸屬 ----
-    if rec.src in local_ips:
+    _apply_direction_and_owner(rec, local_ips, conn_index)
+    return rec
+
+
+def _apply_direction_and_owner(rec: PacketRecord, local_ips: set[str],
+                               conn_index: ConnectionIndex | None,
+                               direction_hint: str | None = None) -> None:
+    """判斷方向並把封包歸屬到程式（direction_hint 有值時以它為準）。"""
+    if direction_hint in ("out", "in"):
+        rec.direction = direction_hint
+    elif rec.src in local_ips:
         rec.direction = "out"
     elif rec.dst in local_ips:
         rec.direction = "in"
@@ -200,7 +248,68 @@ def packet_to_record(pkt, index: int, local_ips: set[str],
                                           rec.src, rec.src_port)
         rec.pid = pid or UNKNOWN_PID
         rec.process_name = name
+
+
+_ICMP4_NAMES = {0: "Echo 回覆（pong）", 3: "目的地無法到達",
+                8: "Echo 請求（ping）", 11: "TTL 超時"}
+_ICMP6_NAMES = {1: "目的地無法到達", 3: "TTL 超時",
+                128: "Echo 請求（ping6）", 129: "Echo 回覆（pong6）"}
+
+
+def record_from_ip_bytes(data: bytes, index: int, local_ips: set[str],
+                         conn_index: ConnectionIndex | None = None,
+                         timestamp: float | None = None,
+                         direction_hint: str | None = None) -> PacketRecord:
+    """把一個 IP 本體位元組（WinDivert 擷取）轉成 PacketRecord。"""
+    data = bytes(data)
+    rec = PacketRecord(index=index, timestamp=timestamp or time.time(),
+                       length=len(data), raw=data, link_type="ip")
+    parsed = parse_ip_packet(data)
+    if parsed is None:
+        rec.transport = rec.protocol = "IP?"
+        rec.info = f"無法解析的 IP 封包（{len(data)} bytes）"
+        _apply_direction_and_owner(rec, local_ips, conn_index, direction_hint)
+        return rec
+    rec.src, rec.dst = parsed.src, parsed.dst
+    rec.src_port, rec.dst_port = parsed.src_port, parsed.dst_port
+    rec.transport = parsed.transport
+    rec.payload = parsed.payload
+    if parsed.transport == "TCP":
+        rec.info = (
+            f"{parsed.src_port} → {parsed.dst_port} [{_tcp_flag_str(parsed.tcp_flags)}] "
+            f"Seq={parsed.tcp_seq} Ack={parsed.tcp_ack} Win={parsed.tcp_window} "
+            f"Len={len(parsed.payload)}"
+        )
+    elif parsed.transport == "UDP":
+        rec.info = f"{parsed.src_port} → {parsed.dst_port}，長度 {len(parsed.payload)}"
+    elif parsed.transport in ("ICMP", "ICMPv6"):
+        rec.protocol = parsed.transport
+        names = _ICMP4_NAMES if parsed.transport == "ICMP" else _ICMP6_NAMES
+        rec.info = names.get(parsed.icmp_type, f"type={parsed.icmp_type}")
+    else:
+        rec.protocol = parsed.transport
+    if parsed.transport in ("TCP", "UDP"):
+        app_proto, app_info = classify_payload(
+            parsed.transport, parsed.src_port, parsed.dst_port, parsed.payload)
+        rec.protocol = app_proto
+        if app_proto != parsed.transport and app_info:
+            rec.info = app_info
+        elif not parsed.payload and parsed.transport == "UDP":
+            rec.info = app_info or rec.info
+    _apply_direction_and_owner(rec, local_ips, conn_index, direction_hint)
     return rec
+
+
+def record_from_pydivert(pkt, index: int, local_ips: set[str],
+                         conn_index: ConnectionIndex | None = None) -> PacketRecord:
+    """把 pydivert 封包物件轉成 PacketRecord（由 raw IP 位元組重新解析）。"""
+    timestamp = None
+    raw_ts = getattr(pkt, "timestamp", None)
+    if isinstance(raw_ts, (int, float)):
+        timestamp = float(raw_ts)
+    return record_from_ip_bytes(
+        packet_raw_bytes(pkt), index, local_ips, conn_index,
+        timestamp=timestamp, direction_hint=packet_direction(pkt))
 
 
 def list_interfaces() -> list[dict]:
@@ -246,8 +355,11 @@ PacketCallback = Callable[[PacketRecord], None]
 class CaptureEngine:
     """封包擷取引擎（背景執行緒擷取、主緒程透過 callback 接收）。"""
 
-    def __init__(self, conn_index: ConnectionIndex | None = None):
+    def __init__(self, conn_index: ConnectionIndex | None = None,
+                 divert_factory=None):
         self.conn_index = conn_index
+        # divert_factory：注入式 WinDivert 後端（測試用），簽名同 open_sniff_handle
+        self._divert_factory = divert_factory
         self._sniffer = None
         self._counter = 0
         self._lock = threading.Lock()
@@ -259,19 +371,66 @@ class CaptureEngine:
         self.started_at: float = 0.0
         self.total_packets = 0
         self.total_bytes = 0
+        self.backend = ""              # 實際使用中的後端（npcap / windivert）
+        self.active_filter = ""        # 實際套用的過濾條件（WinDivert 時是其語法）
+        self.last_error = ""           # 背景擷取中斷原因（供 GUI 顯示）
+        self._wd_handle = None
+        self._wd_thread: threading.Thread | None = None
+        self._stop_event = threading.Event()
 
     def refresh_local_ips(self) -> None:
         self._local_ips = get_local_ips()
 
     # ---------------------------------------------------------- 即時擷取
-    def start(self, iface: str | None = None, bpf_filter: str = "") -> None:
-        """開始擷取。iface=None 表示所有介面。失敗會拋出例外，訊息可直接顯示。"""
-        ok, msg = capture_availability()
-        if not ok:
-            raise RuntimeError(msg)
+    def start(self, iface: str | None = None, bpf_filter: str = "",
+              backend: str = BACKEND_AUTO, divert_filter: str | None = None) -> None:
+        """開始擷取。backend 可為 auto/npcap/windivert；iface=None 表示所有介面
+        （僅 Npcap 後端可選介面）。divert_filter 有值時直接當 WinDivert 語法用；
+        否則 bpf_filter 會在 WinDivert 後端嘗試自動轉譯（轉不了就拋錯）。
+        失敗會拋出例外，訊息可直接顯示。"""
         if self.running:
             raise RuntimeError("擷取已在進行中")
+        chosen = self._resolve_backend(backend)
         self.refresh_local_ips()
+        self.last_error = ""
+        if chosen == BACKEND_WINDIVERT:
+            self._start_windivert(bpf_filter, divert_filter)  # 內部會先設 running=True
+            self.iface = None
+            if not self.running:  # 收包緒在交棒前就死了
+                raise RuntimeError(self.last_error or "WinDivert 擷取啟動後立即停止")
+        else:
+            self._start_npcap(iface, bpf_filter)
+            self.iface = iface
+            self.running = True
+        self.backend = chosen
+        self.bpf_filter = bpf_filter
+        self.started_at = time.time()
+
+    def _resolve_backend(self, requested: str) -> str:
+        req = (requested or BACKEND_AUTO).strip().lower()
+        if req not in (BACKEND_AUTO, BACKEND_NPCAP, BACKEND_WINDIVERT):
+            raise RuntimeError(f"不認識的擷取後端：{requested}")
+        npc_ok, npc_msg = capture_availability()
+        if req == BACKEND_NPCAP:
+            if not npc_ok:
+                raise RuntimeError(npc_msg)
+            return BACKEND_NPCAP
+        if self._divert_factory is not None:
+            wd_ok, wd_msg = True, "（注入式測試後端）"
+        else:
+            wd_ok, wd_msg = sniff_availability()
+        if req == BACKEND_WINDIVERT:
+            if not wd_ok:
+                raise RuntimeError(wd_msg)
+            return BACKEND_WINDIVERT
+        if npc_ok:
+            return BACKEND_NPCAP
+        if wd_ok:
+            return BACKEND_WINDIVERT
+        raise RuntimeError(f"沒有可用的擷取後端。{npc_msg}；WinDivert：{wd_msg}")
+
+    def _start_npcap(self, iface: str | None, bpf_filter: str) -> None:
+        self.active_filter = bpf_filter.strip()
         kwargs: dict = {"prn": self._handle, "store": False}
         if iface:
             kwargs["iface"] = iface
@@ -290,10 +449,86 @@ class CaptureEngine:
                 "擷取啟動失敗" + detail + "：請檢查介面與 BPF 過濾語法，"
                 "或確認已以系統管理員身分執行、Npcap 已安裝。")
         self._sniffer = sniffer
-        self.iface = iface
-        self.bpf_filter = bpf_filter
-        self.running = True
-        self.started_at = time.time()
+
+    def _start_windivert(self, bpf_filter: str, divert_filter: str | None) -> None:
+        if divert_filter is not None:
+            wd_filter = divert_filter.strip() or "true"
+        elif (bpf_filter or "").strip():
+            wd_filter = translate_bpf_to_windivert(bpf_filter)
+            if wd_filter is None:
+                raise RuntimeError(
+                    "目前的過濾條件無法自動轉成 WinDivert 語法（WinDivert 只有 IP "
+                    "層、看不到 Ethernet/ARP）。請改寫成 WinDivert 語法"
+                    "（例：tcp and tcp.DstPort == 443），或清空過濾後再開始。")
+        else:
+            wd_filter = "true"
+        factory = self._divert_factory or open_sniff_handle
+        try:
+            opened = factory(wd_filter)
+        except Exception as exc:
+            raise RuntimeError(
+                f"無法開啟 WinDivert 擷取：{exc}"
+                "（常見原因：未以系統管理員身分執行，或 Windows 11 核心隔離／"
+                "驅動程式封鎖清單擋下驅動）") from exc
+        if isinstance(opened, tuple):
+            handle, sniff_ok = opened
+        else:
+            handle, sniff_ok = opened, False  # 不確定就保底原樣回注，絕不卡流量
+        self._wd_handle = handle
+        self.active_filter = wd_filter
+        self._stop_event.clear()
+        thread = threading.Thread(target=self._divert_loop, args=(handle, sniff_ok),
+                                  daemon=True, name="netmon-windivert-sniff")
+        self._wd_thread = thread
+        self.running = True  # 先設旗標，收包緒出錯時改成 False 才不會被覆寫
+        thread.start()
+        time.sleep(0.25)  # 讓開局錯誤（語法/權限）立刻浮現
+        if not thread.is_alive() and self.last_error:
+            error = self.last_error
+            self._close_wd_handle()
+            self._wd_thread = None
+            self.running = False
+            raise RuntimeError(error)
+
+    def _close_wd_handle(self) -> None:
+        handle, self._wd_handle = self._wd_handle, None
+        closer = getattr(handle, "close", None)
+        if callable(closer):
+            try:
+                closer()
+            except Exception:
+                pass
+
+    def _divert_loop(self, handle, sniff_ok: bool) -> None:
+        sender = getattr(handle, "send", None)
+        try:
+            for pkt in handle:
+                if self._stop_event.is_set():
+                    break
+                if not sniff_ok and callable(sender):
+                    # 非 SNIFF 保底：封包是真的被攔下來的，原封不動立即回注
+                    try:
+                        sender(pkt, recalculate_checksum=False)
+                    except TypeError:
+                        try:
+                            sender(pkt)
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
+                with self._lock:
+                    self._counter += 1
+                    index = self._counter
+                try:
+                    rec = record_from_pydivert(pkt, index, self._local_ips,
+                                               self.conn_index)
+                except Exception:
+                    continue  # 單一封包解析失敗不應讓擷取中斷
+                self._emit(rec)
+        except Exception as exc:  # 關閉造成的中斷屬正常，其他要讓使用者知道
+            if not self._stop_event.is_set():
+                self.last_error = f"WinDivert 擷取中斷：{exc}"
+                self.running = False
 
     def _handle(self, pkt) -> None:
         try:
@@ -301,23 +536,33 @@ class CaptureEngine:
                 self._counter += 1
                 index = self._counter
             rec = packet_to_record(pkt, index, self._local_ips, self.conn_index)
-            with self._lock:
-                self.total_packets += 1
-                self.total_bytes += rec.length
-            if self.on_packet:
-                self.on_packet(rec)
+            self._emit(rec)
         except Exception:
             # 單一封包解析失敗不應讓擷取中斷
             pass
 
+    def _emit(self, rec: PacketRecord) -> None:
+        with self._lock:
+            self.total_packets += 1
+            self.total_bytes += rec.length
+        if self.on_packet:
+            self.on_packet(rec)
+
     def stop(self) -> None:
+        self.running = False
+        self._stop_event.set()
         if self._sniffer is not None:
             try:
                 self._sniffer.stop()
             except Exception:
                 pass
             self._sniffer = None
-        self.running = False
+        thread, self._wd_thread = self._wd_thread, None
+        self._close_wd_handle()
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=3.0)
+        self.backend = ""
+        self.active_filter = ""
 
     def reset_counters(self) -> None:
         with self._lock:
@@ -327,19 +572,36 @@ class CaptureEngine:
 
     # ---------------------------------------------------------- pcap 存讀
     def save_pcap(self, path: str, records: list[PacketRecord]) -> int:
-        """把已擷取的封包存成 .pcap（可用 Wireshark 開啟），回傳寫入筆數。"""
+        """把已擷取的封包存成 .pcap（可用 Wireshark 開啟），回傳寫入筆數。
+
+        全是 WinDivert 的 IP 封包時存成 DLT_RAW（LINKTYPE 101，純 IP）；
+        若清單混有 Ethernet 封包，IP 封包會補上合成的 Ethernet 外框
+        （位址為 0）統一鏈路層，才不會產生混鏈路層的壞檔。
+        """
         if not SCAPY_AVAILABLE:
             raise RuntimeError("需要 Scapy 才能儲存 pcap")
+        usable = [r for r in records if r.raw]
+        all_ip = bool(usable) and all(r.link_type == "ip" for r in usable)
         pkts = []
-        for rec in records:
-            if rec.raw:
-                try:
+        for rec in usable:
+            try:
+                if rec.link_type == "ip":
+                    is_v4 = (rec.raw[0] >> 4) == 4
+                    if all_ip:
+                        pkt = (IP if is_v4 else IPv6)(rec.raw)
+                    else:
+                        eth_type = b"\x08\x00" if is_v4 else b"\x86\xdd"
+                        pkt = Ether(b"\x00" * 12 + eth_type + rec.raw)
+                else:
                     pkt = Ether(rec.raw)
-                    pkt.time = rec.timestamp
-                    pkts.append(pkt)
-                except Exception:
-                    continue
-        wrpcap(path, pkts)
+                pkt.time = rec.timestamp
+                pkts.append(pkt)
+            except Exception:
+                continue
+        if all_ip:
+            wrpcap(path, pkts, linktype=101)  # LINKTYPE_RAW（純 IP）
+        else:
+            wrpcap(path, pkts)
         return len(pkts)
 
     def load_pcap(self, path: str) -> list[PacketRecord]:

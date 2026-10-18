@@ -4,6 +4,7 @@
     python main.py            開啟 GUI（層級 1~5，建議以系統管理員身分執行）
     python main.py --check    環境診斷（psutil / Scapy / Npcap / pydivert / 管理員權限）
     python main.py --cli      命令列模式：列出連線清單並即時顯示網速（README 範例 1）
+    python main.py --install-npcap  從官方 npcap.com 下載並啟動 Npcap 安裝（Windows）
 """
 from __future__ import annotations
 
@@ -54,7 +55,10 @@ def run_check() -> int:
         overall_ok = False
         print("tkinter：不可用（Windows 官方 Python 安裝檔有內建，安裝時請勾選 Tcl/Tk）")
 
-    from netmon.capture import SCAPY_AVAILABLE, SCAPY_ERROR, capture_availability, list_interfaces
+    from netmon.capture import (
+        SCAPY_AVAILABLE, SCAPY_ERROR, any_capture_availability, backend_availability,
+        list_interfaces,
+    )
 
     if SCAPY_AVAILABLE:
         print("Scapy：已安裝")
@@ -64,10 +68,18 @@ def run_check() -> int:
     npcap_ok, npcap_msg = check_npcap()
     if is_windows():
         print(f"Npcap：{'已安裝' if npcap_ok else '未偵測到'} — {npcap_msg}")
-    ok, msg = capture_availability()
+        if not npcap_ok:
+            print("  → 可執行 `python main.py --install-npcap`，或在 GUI「📦 封包擷取」頁"
+                  "按一鍵安裝（從官方下載，Npcap 授權不允許我們直接打包它）")
+    backs = backend_availability()
+    for key, label in (("npcap", "Npcap 後端（Ethernet 完整擷取）"),
+                       ("windivert", "WinDivert 後端（免 Npcap、IP 層）")):
+        b_ok, b_msg = backs[key]
+        print(f"  {label}：{'就緒' if b_ok else '不可用'} — {b_msg}")
+    ok, msg = any_capture_availability()
     print(f"封包擷取（層級 3、4）：{'就緒' if ok else '不可用'} — {msg}")
     if not ok:
-        print("  （不影響層級 1、2；裝好 Scapy + Npcap 並以管理員執行即可使用層級 3、4）")
+        print("  （不影響層級 1、2；裝 Npcap 或備妥 pydivert/WinDivert 並以管理員執行即可）")
 
     from netmon.divert_engine import divert_availability, pydivert_installed
     from netmon.win_firewall import firewall_availability
@@ -85,6 +97,43 @@ def run_check() -> int:
             print(f"  - {iface['label']}")
     print("=== 診斷結束 ===" + ("" if overall_ok else "（有項目需要處理，請看上方提示）"))
     return 0 if overall_ok else 1
+
+
+def run_install_npcap() -> int:
+    """命令列版一鍵安裝：經使用者確認後，從官網下載、驗簽並啟動 Npcap 精靈。"""
+    from netmon.npcap_install import NPCAP_LICENSE_NOTE, install_npcap
+    from netmon.utils import check_npcap, fmt_bytes, is_windows
+
+    if not is_windows():
+        print("只有 Windows 需要 Npcap。")
+        return 1
+    ok, msg = check_npcap()
+    if ok:
+        print(f"Npcap 已安裝：{msg}，不需要再裝一次。")
+        return 0
+    print("將從官方網站 https://npcap.com 下載最新版 Npcap 安裝程式，")
+    print("驗證數位簽章後啟動它的互動安裝精靈（免費版不支援靜默安裝，需手動按完）。")
+    print(NPCAP_LICENSE_NOTE)
+    try:
+        answer = input("確定要下載並安裝嗎？ [y/N] ").strip().lower()
+    except EOFError:
+        answer = ""
+    if answer not in ("y", "yes"):
+        print("已取消。你也可以到 https://npcap.com 手動下載。")
+        return 1
+
+    def progress(downloaded: int, total: int) -> None:
+        pct = f"{downloaded * 100 // total}%" if total else "-"
+        print(f"\r下載中… {fmt_bytes(downloaded)} / {fmt_bytes(total) if total else '?'}（{pct}）",
+              end="", flush=True)
+
+    success, message, path = install_npcap(progress=progress)
+    print()
+    if not success:
+        print(message)
+        return 1
+    print(message)
+    return 0
 
 
 def run_cli() -> int:
@@ -132,12 +181,16 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Win-NetMon：Windows 網路流量監測/管制（層級 1~5）")
     parser.add_argument("--check", action="store_true", help="環境診斷後結束")
     parser.add_argument("--cli", action="store_true", help="命令列模式（不開 GUI）")
+    parser.add_argument("--install-npcap", action="store_true",
+                        help="從官方 npcap.com 下載並啟動 Npcap 安裝（僅 Windows）")
     args = parser.parse_args(argv)
 
     if args.check:
         return run_check()
     if args.cli:
         return run_cli()
+    if args.install_npcap:
+        return run_install_npcap()
 
     try:
         import tkinter  # noqa: F401

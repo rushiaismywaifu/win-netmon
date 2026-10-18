@@ -3,7 +3,10 @@ chcp 65001 >nul
 REM ============================================================
 REM  （選用）用 PyInstaller 打包成 WinNetMon.exe
 REM  --uac-admin：雙擊 exe 會自動要求系統管理員權限
-REM  注意：仍需安裝 Npcap 才能使用層級 3、4；層級 5 的 WinDivert 驅動會一併打包（pydivert 內含）。
+REM  注意：Npcap 免費版授權禁止再散布、也不能靜默安裝，無法合法打包進 exe；
+REM  WinNetMon.exe 首次執行時可在「封包擷取」頁一鍵從官網下載安裝（或 --install-npcap）。
+REM  WinDivert 驅動會隨 pydivert 一併打包：沒裝 Npcap 時，層級 3/4 會自動改用
+REM  WinDivert 後端擷取 IP 層封包（無 Ethernet/ARP），層級 5 攔截也用同一個驅動。
 REM ============================================================
 cd /d "%~dp0"
 

@@ -1,4 +1,4 @@
-"""層級 4 分頁：封包擷取與解析（Npcap + Scapy）。
+"""層級 4 分頁：封包擷取與解析（Npcap 完整後端 / WinDivert 免 Npcap 後端）。
 
 功能：介面選擇、BPF 過濾、即時封包列表（協定著色）、逐層解析、
 Hex dump、Payload 預覽、TLS SNI / DNS 摘要、存取 .pcap、協定分佈統計。
@@ -11,8 +11,11 @@ import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
-from ..capture import PacketRecord, capture_availability, list_interfaces
-from ..utils import fmt_bytes, fmt_count, fmt_time, hexdump
+from ..capture import PacketRecord, backend_availability, list_interfaces
+from ..npcap_install import (
+    NPCAP_LICENSE_NOTE, download_installer, launch_installer, verify_authenticode,
+)
+from ..utils import check_npcap, fmt_bytes, fmt_count, fmt_time, hexdump, is_windows
 from . import theme
 from .widgets import copy_text, make_tree
 
@@ -28,6 +31,30 @@ BPF_PRESETS = {
     "指定主機 host 8.8.8.8": "host 8.8.8.8",
 }
 
+# WinDivert 過濾語法預設（IP 層；沒有 ARP/Ethernet 類別）
+WD_PRESETS = {
+    "全部封包": "",
+    "HTTPS（tcp 443）": "tcp.DstPort == 443 or tcp.SrcPort == 443",
+    "HTTP（tcp 80）": "tcp.DstPort == 80 or tcp.SrcPort == 80",
+    "DNS（udp 53）": "udp.DstPort == 53 or udp.SrcPort == 53",
+    "ICMP（ping）": "icmp",
+    "只看上傳（outbound）": "outbound",
+    "只看下載（inbound）": "inbound",
+    "指定主機 8.8.8.8": "ip.DstAddr == 8.8.8.8 or ip.SrcAddr == 8.8.8.8",
+}
+
+BACKEND_OPTIONS = {
+    "自動選擇": "auto",
+    "Npcap（完整）": "npcap",
+    "WinDivert（免 Npcap）": "windivert",
+}
+
+_BACKEND_HINTS = {
+    "auto": "Npcap 優先；沒裝 Npcap 自動改用 WinDivert（常見 BPF 會自動轉譯）",
+    "npcap": "Ethernet 完整擷取（含 ARP/MAC、可選介面）",
+    "windivert": "所有介面一次看（IP 層，無 Ethernet/ARP）",
+}
+
 
 class PacketsTab(ttk.Frame):
     def __init__(self, parent, app):
@@ -40,15 +67,43 @@ class PacketsTab(ttk.Frame):
         self._last_stat = (time.time(), 0)  # (時間, 封包數) 用於估算 pps
 
         # ---------- 可用性提示 ----------
-        ok, msg = capture_availability()
+        backs = backend_availability()
+        npc_ok, npc_msg = backs["npcap"]
+        wd_ok, wd_msg = backs["windivert"]
+        ok = npc_ok or wd_ok
         self._available = ok
+        self._running_ui = False
         self.avail_label = ttk.Label(self, text="", style="Muted.TLabel")
         if not ok:
             self.avail_label.config(
-                text=f"⚠ 封包擷取目前不可用：{msg}\n"
+                text=f"⚠ 封包擷取目前不可用：Npcap 路徑（{npc_msg}）；WinDivert 路徑（{wd_msg}）\n"
                      "層級 1（網速）與層級 2（連線清單）仍可正常使用；層級 3 需要層級 4 的封包來歸屬流量。",
                 foreground=theme.YELLOW)
             self.avail_label.pack(anchor="w", padx=12, pady=(8, 0))
+        elif not npc_ok and wd_ok:
+            self.avail_label.config(
+                text="ℹ 未偵測到 Npcap，將用免 Npcap 的 WinDivert 後端擷取 IP 層封包"
+                     "（DNS/TLS 網域/程式歸屬照常，但沒有 Ethernet/ARP）。"
+                     "想要完整擷取可用下方一鍵安裝 Npcap。")
+            self.avail_label.pack(anchor="w", padx=12, pady=(8, 0))
+
+        # Npcap 一鍵安裝（只在 Windows 且偵測不到 Npcap 時顯示；widget 一律先建好方便測試）
+        self._npcap_busy = False
+        npcap_row = ttk.Frame(self)
+        self.npcap_btn = ttk.Button(
+            npcap_row, text="⬇ 一鍵下載並安裝 Npcap（官方 npcap.com）",
+            style="Accent.TButton", command=self._install_npcap_clicked)
+        self.npcap_btn.pack(side="left")
+        self.npcap_status = ttk.Label(
+            npcap_row,
+            text="Npcap 受其授權限制不能隨本程式打包；這顆按鈕會在你同意後從官方下載安裝檔、"
+                 "驗證簽章再啟動它的互動安裝精靈（免費版不支援靜默安裝）。沒裝也能先用 WinDivert "
+                 "後端抓 IP 層封包，裝它是為了 Ethernet/ARP 與選介面的完整功能。",
+            style="Muted.TLabel")
+        self.npcap_status.pack(side="left", padx=8)
+        self._npcap_missing = bool(is_windows() and not check_npcap()[0])
+        if self._npcap_missing:
+            npcap_row.pack(anchor="w", padx=12, pady=(4, 0))
 
         # ---------- 工具列 1：擷取控制 ----------
         bar1 = ttk.Frame(self)
@@ -59,12 +114,13 @@ class PacketsTab(ttk.Frame):
                                       values=["所有介面"], state="readonly")
         self.iface_box.pack(side="left", padx=4)
 
-        ttk.Label(bar1, text="BPF 過濾：").pack(side="left", padx=(10, 0))
+        self.filter_label = ttk.Label(bar1, text="BPF 過濾：")
+        self.filter_label.pack(side="left", padx=(10, 0))
         self.preset_var = tk.StringVar(value="全部封包")
-        preset_box = ttk.Combobox(bar1, textvariable=self.preset_var, width=20,
-                                  values=list(BPF_PRESETS), state="readonly")
-        preset_box.pack(side="left", padx=4)
-        preset_box.bind("<<ComboboxSelected>>", self._apply_preset)
+        self.preset_box = ttk.Combobox(bar1, textvariable=self.preset_var, width=20,
+                                       values=list(BPF_PRESETS), state="readonly")
+        self.preset_box.pack(side="left", padx=4)
+        self.preset_box.bind("<<ComboboxSelected>>", self._apply_preset)
         self.bpf_var = tk.StringVar()
         self.bpf_entry = ttk.Entry(bar1, textvariable=self.bpf_var, width=28)
         self.bpf_entry.pack(side="left", padx=4)
@@ -81,6 +137,14 @@ class PacketsTab(ttk.Frame):
         # ---------- 工具列 2：顯示控制 ----------
         bar2 = ttk.Frame(self)
         bar2.pack(fill="x", padx=10, pady=2)
+        ttk.Label(bar2, text="擷取後端：").pack(side="left")
+        self.backend_var = tk.StringVar(value="自動選擇")
+        self.backend_box = ttk.Combobox(bar2, textvariable=self.backend_var, width=22,
+                                        values=list(BACKEND_OPTIONS), state="readonly")
+        self.backend_box.pack(side="left", padx=4)
+        self.backend_box.bind("<<ComboboxSelected>>", self._on_backend_changed)
+        self.backend_hint = ttk.Label(bar2, text=_BACKEND_HINTS["auto"], style="Muted.TLabel")
+        self.backend_hint.pack(side="left", padx=(2, 12))
         ttk.Label(bar2, text="顯示篩選：").pack(side="left")
         self.display_filter_var = tk.StringVar()
         filter_entry = ttk.Entry(bar2, textvariable=self.display_filter_var, width=30)
@@ -153,6 +217,70 @@ class PacketsTab(ttk.Frame):
         self.after(50, self._load_interfaces_async)
 
     # ------------------------------------------------------------- 介面
+    # ------------------------------------------------------------- Npcap 一鍵安裝
+    def _install_npcap_clicked(self) -> None:
+        if self._npcap_busy:
+            return
+        if not messagebox.askyesno(
+                "下載並安裝 Npcap",
+                "將從官方網站 https://npcap.com 下載最新版安裝程式，"
+                "驗證數位簽章後啟動它的安裝精靈（需要你手動按完，免費版不支援靜默安裝）。\n\n"
+                + NPCAP_LICENSE_NOTE + "\n\n確定要下載並安裝嗎？", parent=self):
+            return
+        self._npcap_busy = True
+        self.npcap_btn.config(state="disabled")
+        self.npcap_status.config(text="正在查詢官網最新版本…")
+        pct_state = {"pct": -1}
+
+        def progress(downloaded: int, total: int) -> None:
+            pct = int(downloaded * 100 / total) if total else 0
+            if abs(pct - pct_state["pct"]) >= 5 or downloaded == total:
+                pct_state["pct"] = pct
+                text = (f"下載中… {fmt_bytes(downloaded)} / {fmt_bytes(total)}（{pct}%）"
+                        if total else f"下載中… {fmt_bytes(downloaded)}")
+                self.app.call_in_ui(lambda t=text: self.npcap_status.config(text=t))
+
+        def worker() -> None:
+            try:
+                path = download_installer(progress=progress)
+            except Exception as exc:  # noqa: BLE001
+                self.app.call_in_ui(lambda e=exc: self._npcap_failed(str(e)))
+                return
+            verified, detail = verify_authenticode(path)
+            self.app.call_in_ui(lambda: self._npcap_download_done(path, verified, detail))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _npcap_failed(self, message: str) -> None:
+        self._npcap_busy = False
+        self.npcap_btn.config(state="normal")
+        self.npcap_status.config(text=f"下載失敗：{message}（也可到 https://npcap.com 手動安裝）")
+        messagebox.showerror("Npcap 下載失敗", message + "\n\n你也可以到 https://npcap.com 手動下載安裝。",
+                             parent=self)
+
+    def _npcap_download_done(self, path, verified, detail: str) -> None:
+        self._npcap_busy = False
+        self.npcap_btn.config(state="normal")
+        if verified is False:
+            self.npcap_status.config(text=f"已拒絕執行（{detail}），檔案保留在：{path}")
+            messagebox.showerror("簽章驗證失敗", f"拒絕執行這個檔案：{detail}\n\n檔案位置：{path}",
+                                 parent=self)
+            return
+        if verified is None:
+            if not messagebox.askyesno(
+                    "無法驗證數位簽章",
+                    f"{detail}。\n\n檔案已由 https://npcap.com（官方 TLS 網站）下載至：\n{path}\n\n"
+                    "仍要執行這個安裝程式嗎？", parent=self):
+                self.npcap_status.config(text=f"已下載但未執行：{path}（可自行檢查後手動安裝）")
+                return
+        ok, msg = launch_installer(path)
+        if ok:
+            self.npcap_status.config(text=msg)
+            self.app.set_status(msg)
+            messagebox.showinfo("Npcap 安裝", msg, parent=self)
+        else:
+            self._npcap_failed(msg)
+
     def _load_interfaces_async(self) -> None:
         def worker():
             ifaces = list_interfaces()
@@ -180,20 +308,51 @@ class PacketsTab(ttk.Frame):
         return None
 
     # ------------------------------------------------------------- 擷取控制
+    def selected_backend(self) -> str:
+        return BACKEND_OPTIONS.get(self.backend_var.get(), "auto")
+
+    def _active_presets(self) -> dict:
+        return WD_PRESETS if self.selected_backend() == "windivert" else BPF_PRESETS
+
+    def _on_backend_changed(self, _event=None) -> None:
+        backend = self.selected_backend()
+        windivert = backend == "windivert"
+        self.filter_label.config(text="WinDivert 過濾：" if windivert else "BPF 過濾：")
+        self.preset_box.config(values=list(self._active_presets()))
+        self.preset_var.set("全部封包")
+        self.bpf_var.set("")
+        self.backend_hint.config(text=_BACKEND_HINTS.get(backend, ""))
+        if not self._running_ui:
+            # WinDivert 擷取所有介面，介面選單不適用
+            self.iface_box.config(state="disabled" if windivert else "readonly")
+
+    def capture_request(self) -> dict:
+        """組出 CaptureEngine.start() 的參數（依後端決定過濾欄位的語法）。"""
+        backend = self.selected_backend()
+        text = self.bpf_var.get().strip()
+        if backend == "windivert":
+            return {"iface": None, "bpf_filter": "", "backend": "windivert",
+                    "divert_filter": text}
+        return {"iface": self.selected_iface(), "bpf_filter": text, "backend": backend}
+
     def _apply_preset(self, _event=None) -> None:
-        self.bpf_var.set(BPF_PRESETS.get(self.preset_var.get(), ""))
+        self.bpf_var.set(self._active_presets().get(self.preset_var.get(), ""))
 
     def _toggle_capture(self) -> None:
         self.app.toggle_capture()
 
     def set_capturing_ui(self, running: bool) -> None:
+        self._running_ui = running
         if running:
             self.capture_btn.config(text="⏹ 停止擷取", style="Danger.TButton", state="normal")
         else:
             self.capture_btn.config(text="▶ 開始擷取", style="Accent.TButton",
                                     state="normal" if self._available else "disabled")
-        ctl_state = "disabled" if running else "readonly"
-        self.iface_box.config(state=ctl_state)
+        self.backend_box.config(state="disabled" if running else "readonly")
+        if running or self.selected_backend() == "windivert":
+            self.iface_box.config(state="disabled")
+        else:
+            self.iface_box.config(state="readonly")
         self.bpf_entry.config(state="disabled" if running else "normal")
 
     # ------------------------------------------------------------- 資料
@@ -312,14 +471,15 @@ class PacketsTab(ttk.Frame):
 
     # ------------------------------------------------------------- 統計/選單
     def update_stats(self, running: bool, total_packets: int, total_bytes: int,
-                     elapsed: float) -> None:
+                     elapsed: float, backend: str = "") -> None:
         now = time.time()
         last_t, last_n = self._last_stat
         pps = (total_packets - last_n) / max(now - last_t, 0.001) if running else 0.0
         self._last_stat = (now, total_packets)
         top = sorted(self._proto_counts.items(), key=lambda kv: kv[1], reverse=True)[:5]
         proto_text = "、".join(f"{k} {v:,}" for k, v in top) or "尚無封包"
-        state = "● 擷取中" if running else "已停止"
+        names = {"npcap": "Npcap", "windivert": "WinDivert・IP 層"}
+        state = f"● 擷取中（{names.get(backend, backend)}）" if running else "已停止"
         self.stats_label.config(
             text=f"{state}｜已擷取 {fmt_count(total_packets)} 封包 / {fmt_bytes(total_bytes)}"
                  f"｜{pps:.0f} pps｜顯示 {len(self.tree.get_children()):,} 筆｜協定：{proto_text}")

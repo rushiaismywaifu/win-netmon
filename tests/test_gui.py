@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib
 import sys
 import tempfile
+import time
 import types
 import unittest
 from pathlib import Path
@@ -467,6 +468,108 @@ class TestPacketsTabTrim(unittest.TestCase):
             tab.display_filter_var.set("")
             tab._rebuild()
             self.assertEqual(len(tab._by_iid), 2)
+
+        self._with_app(check)
+
+
+class TestCaptureStartAsync(unittest.TestCase):
+    """回歸測試：開始擷取在背景緒程開啟後端，GUI 主緒程不凍結。"""
+
+    def _with_app(self, callback) -> None:
+        with tempfile.TemporaryDirectory() as td, _FakeTkContext():
+            store_path = str(Path(td) / "rules.json")
+            with patch("netmon.rule_store.default_store_path", return_value=store_path):
+                app = importlib.import_module("netmon.gui.app").MainApp()
+                try:
+                    callback(app)
+                finally:
+                    app._on_close()
+
+    def _wait_start(self, app) -> None:
+        """反覆執行 GUI 排程迴圈，直到背景啟動回呼被處理完。"""
+        deadline = time.time() + 5.0
+        while app._capture_starting and time.time() < deadline:
+            time.sleep(0.02)
+            app._drain_loop()
+        self.assertFalse(app._capture_starting, "背景啟動回呼未被處理（逾時）")
+
+    def test_toggle_capture_does_not_block_and_updates_ui(self):
+        import netmon.capture as capture_mod
+
+        def slow_start(engine, **_kw):
+            time.sleep(0.4)  # 模擬開驅動/等後端就緒
+            engine.running = True
+            engine.backend = "npcap"
+            engine.started_at = time.time()
+
+        def check(app):
+            with patch.object(capture_mod.CaptureEngine, "start", slow_start):
+                t0 = time.monotonic()
+                app.toggle_capture()
+                elapsed = time.monotonic() - t0
+                self.assertLess(elapsed, 0.25, "toggle_capture 仍在同步等待後端啟動")
+                self.assertTrue(app._capture_starting)
+                self.assertEqual(app.packets_tab.capture_btn.cget("state"), "disabled")
+                self.assertIn("啟動", app.packets_tab.capture_btn.cget("text"))
+                # 啟動中再按一次不應再開一條緒程
+                app.toggle_capture()
+                self._wait_start(app)
+            self.assertTrue(app.capture_engine.running)
+            self.assertTrue(app._capture_was_running)
+            self.assertEqual(app.packets_tab.capture_btn.cget("text"), "⏹ 停止擷取")
+            self.assertIn("擷取中", app.status_var.get())
+
+        self._with_app(check)
+
+    def test_start_failure_restores_ui_and_reports_reason(self):
+        import netmon.capture as capture_mod
+
+        def failing_start(_engine, **_kw):
+            time.sleep(0.05)
+            raise RuntimeError("驅動打不開（測試）")
+
+        def check(app):
+            app_mod = importlib.import_module("netmon.gui.app")
+            shown: list[str] = []
+
+            class _StubMessagebox:
+                @staticmethod
+                def showerror(_title, message, **_kw):
+                    shown.append(message)
+
+            with patch.object(capture_mod.CaptureEngine, "start", failing_start), \
+                    patch.object(app_mod, "messagebox", _StubMessagebox()):
+                app.toggle_capture()
+                self._wait_start(app)
+            self.assertFalse(app.capture_engine.running)
+            self.assertFalse(app._capture_was_running)
+            self.assertEqual(app.packets_tab.capture_btn.cget("text"), "▶ 開始擷取")
+            self.assertEqual(app.packets_tab.capture_btn.cget("state"), "normal")
+            self.assertTrue(shown, "啟動失敗應該跳對話框")
+            self.assertIn("驅動打不開", shown[0])
+
+        self._with_app(check)
+
+    def test_unexpected_stop_is_still_reported_by_tick_loop(self):
+        import netmon.capture as capture_mod
+
+        def quick_start(engine, **_kw):
+            engine.running = True
+            engine.backend = "npcap"
+            engine.started_at = time.time()
+
+        def check(app):
+            with patch.object(capture_mod.CaptureEngine, "start", quick_start):
+                app.toggle_capture()
+                self._wait_start(app)
+            engine = app.capture_engine
+            engine.running = False  # 模擬後端意外中斷
+            engine.last_error = "WinDivert 擷取中斷：boom"
+            app._tick_loop()
+            self.assertFalse(app._capture_was_running)
+            self.assertEqual(app.packets_tab.capture_btn.cget("text"), "▶ 開始擷取")
+            self.assertIn("已中斷", app.capture_badge.cget("text"))
+            self.assertIn("已中斷", app.status_var.get())
 
         self._with_app(check)
 

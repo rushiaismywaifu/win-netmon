@@ -341,19 +341,26 @@ class PacketsTab(ttk.Frame):
     def _toggle_capture(self) -> None:
         self.app.toggle_capture()
 
-    def set_capturing_ui(self, running: bool) -> None:
-        self._running_ui = running
-        if running:
+    def set_capturing_ui(self, running: bool, starting: bool = False) -> None:
+        """更新擷取相關控項狀態。
+
+        starting=True 表示後端正在背景緒程開啟（不凍結 GUI），
+        此時把按鈕鎖住避免重複點擊，其他設定項也比照「擷取中」不可改。
+        """
+        self._running_ui = running or starting
+        if starting:
+            self.capture_btn.config(text="⏳ 正在啟動…", state="disabled")
+        elif running:
             self.capture_btn.config(text="⏹ 停止擷取", style="Danger.TButton", state="normal")
         else:
             self.capture_btn.config(text="▶ 開始擷取", style="Accent.TButton",
                                     state="normal" if self._available else "disabled")
-        self.backend_box.config(state="disabled" if running else "readonly")
-        if running or self.selected_backend() == "windivert":
+        self.backend_box.config(state="disabled" if self._running_ui else "readonly")
+        if self._running_ui or self.selected_backend() == "windivert":
             self.iface_box.config(state="disabled")
         else:
             self.iface_box.config(state="readonly")
-        self.bpf_entry.config(state="disabled" if running else "normal")
+        self.bpf_entry.config(state="disabled" if self._running_ui else "normal")
 
     # ------------------------------------------------------------- 資料
     def _matches(self, rec: PacketRecord, keyword: str | None = None) -> bool:
@@ -482,7 +489,7 @@ class PacketsTab(ttk.Frame):
 
     # ------------------------------------------------------------- 統計/選單
     def update_stats(self, running: bool, total_packets: int, total_bytes: int,
-                     elapsed: float, backend: str = "") -> None:
+                     elapsed: float, backend: str = "", starting: bool = False) -> None:
         now = time.time()
         last_t, last_n = self._last_stat
         pps = (total_packets - last_n) / max(now - last_t, 0.001) if running else 0.0
@@ -490,7 +497,12 @@ class PacketsTab(ttk.Frame):
         top = sorted(self._proto_counts.items(), key=lambda kv: kv[1], reverse=True)[:5]
         proto_text = "、".join(f"{k} {v:,}" for k, v in top) or "尚無封包"
         names = {"npcap": "Npcap", "windivert": "WinDivert・IP 層"}
-        state = f"● 擷取中（{names.get(backend, backend)}）" if running else "已停止"
+        if starting:
+            state = "⏳ 正在啟動擷取後端…"
+        elif running:
+            state = f"● 擷取中（{names.get(backend, backend)}）"
+        else:
+            state = "已停止"
         self.stats_label.config(
             text=f"{state}｜已擷取 {fmt_count(total_packets)} 封包 / {fmt_bytes(total_bytes)}"
                  f"｜{pps:.0f} pps｜顯示 {len(self._by_iid):,} 筆｜協定：{proto_text}")

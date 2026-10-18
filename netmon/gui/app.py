@@ -66,6 +66,8 @@ class MainApp(tk.Tk):
         self._conn_thread_running = False
         self._tick_count = 0
         self._closing = False
+        self._capture_starting = False      # 擷取後端正在背景緒程開啟
+        self._capture_was_running = False   # 前一次 tick 時擷取是否在跑（偵測非預期中斷）
 
         # ---------- 選單列 ----------
         self._build_menu()
@@ -428,17 +430,20 @@ class MainApp(tk.Tk):
             self.aggregator.update_rates()
             self.refresh_processes_view()
             engine = self.capture_engine
-            if getattr(self, "_capture_was_running", False) and not engine.running:
-                self.packets_tab.set_capturing_ui(False)
-                try:
-                    self.capture_badge.config(text="● 封包擷取：已中斷", fg=theme.RED)
-                except Exception:
-                    pass
-                if engine.last_error:
-                    self.set_status(f"封包擷取已中斷：{engine.last_error}")
-            self._capture_was_running = engine.running
+            if not self._capture_starting:
+                # 啟動中不做「中斷」判定：背景緒程的完成回呼會接手更新 UI
+                if self._capture_was_running and not engine.running:
+                    self.packets_tab.set_capturing_ui(False)
+                    try:
+                        self.capture_badge.config(text="● 封包擷取：已中斷", fg=theme.RED)
+                    except Exception:
+                        pass
+                    if engine.last_error:
+                        self.set_status(f"封包擷取已中斷：{engine.last_error}")
+                self._capture_was_running = engine.running
             elapsed = (time.time() - engine.started_at) if engine.running and engine.started_at else 0.0
-            self.packets_tab.update_stats(engine.running, engine.total_packets, engine.total_bytes, elapsed, engine.backend)
+            self.packets_tab.update_stats(engine.running, engine.total_packets, engine.total_bytes, elapsed,
+                                          engine.backend, starting=self._capture_starting)
             if self.divert_engine.deadline_exceeded():
                 self.stop_divert_interception(reason="自動停止時間已到，即時攔截已停止（網路恢復正常）。")
             if self.divert_engine.running or self._tick_count % 2 == 0:
@@ -482,10 +487,13 @@ class MainApp(tk.Tk):
 
     # ------------------------------------------------------------- 擷取控制
     def toggle_capture(self) -> None:
+        if self._capture_starting:
+            return  # 啟動中一律忽略（按鈕已鎖住，這裡是保底）
         engine = self.capture_engine
         if engine.running:
             engine.stop()
             self._capture_was_running = False
+            self._capture_starting = False
             self.packets_tab.set_capturing_ui(False)
             try:
                 self.capture_badge.config(text="● 封包擷取：已停止", fg=theme.MUTED)
@@ -494,16 +502,39 @@ class MainApp(tk.Tk):
             self.set_status(f"封包擷取已停止（共 {engine.total_packets:,} 個封包）。可儲存 pcap 用 Wireshark 開啟分析。")
             self.refresh_processes_view()
             return
+
+        request = self.packets_tab.capture_request()
+        self._capture_starting = True
+        self.packets_tab.set_capturing_ui(False, starting=True)
         self.set_status("正在開啟擷取後端（第一次載入驅動可能要等幾秒）…")
-        self.update_idletasks()
-        try:
-            engine.start(**self.packets_tab.capture_request())
-        except Exception as exc:  # noqa: BLE001
-            messagebox.showerror(
-                "無法開始擷取",
-                f"{exc}\n\n常見原因：\n1) 未以系統管理員身分執行\n2) Npcap 未安裝（可用封包頁一鍵安裝，或把擷取後端改成 WinDivert 免 Npcap）\n3) 過濾語法錯誤（Npcap 用 BPF、WinDivert 用它自己的語法）\n4) 介面被其他程式占用",
-                parent=self,
-            )
+
+        def worker() -> None:
+            # 這個緒程只負責「開後端」（含等驅動就緒的 sleep），
+            # 完成後把結果丟回 GUI 主緒程，畫面才不會在這幾百毫秒內凍結。
+            try:
+                engine.start(**request)
+            except Exception as exc:  # noqa: BLE001
+                detail = str(exc)
+                self.call_in_ui(lambda: self._capture_start_failed(detail))
+                return
+            if self._closing:  # 啟動期間使用者關掉了程式
+                try:
+                    engine.stop()
+                except Exception:
+                    pass
+                return
+            self.call_in_ui(self._capture_start_done)
+
+        threading.Thread(target=worker, daemon=True, name="netmon-capture-start").start()
+
+    def _capture_start_done(self) -> None:
+        """背景啟動成功（GUI 主緒程）：切換成「擷取中」狀態。"""
+        if self._closing:
+            return
+        self._capture_starting = False
+        engine = self.capture_engine
+        if not engine.running:  # 啟動後立刻停止的保底
+            self.packets_tab.set_capturing_ui(False)
             return
         self._capture_was_running = True
         self.packets_tab.set_capturing_ui(True)
@@ -516,6 +547,19 @@ class MainApp(tk.Tk):
         self.set_status(f"封包擷取中（後端：{backend_name}）：層級 3「程式流量」與層級 4「封包擷取」即時更新中{extra}。提醒：僅監控自己的電腦/網路。")
         self.refresh_connections(manual=True)
         self.refresh_processes_view()
+
+    def _capture_start_failed(self, message: str) -> None:
+        """背景啟動失敗（GUI 主緒程）：還原 UI 並顯示原因。"""
+        if self._closing:
+            return
+        self._capture_starting = False
+        self.packets_tab.set_capturing_ui(False)
+        self.set_status("封包擷取啟動失敗，詳見對話框說明。")
+        messagebox.showerror(
+            "無法開始擷取",
+            f"{message}\n\n常見原因：\n1) 未以系統管理員身分執行\n2) Npcap 未安裝（可用封包頁一鍵安裝，或把擷取後端改成 WinDivert 免 Npcap）\n3) 過濾語法錯誤（Npcap 用 BPF、WinDivert 用它自己的語法）\n4) 介面被其他程式占用",
+            parent=self,
+        )
 
     # ------------------------------------------------------------- 層級 5 控制
     def toggle_divert_interception(self) -> None:

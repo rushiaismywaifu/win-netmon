@@ -251,7 +251,7 @@ python -m unittest discover -s tests -v
 另有 7 項測 `tools/version.py`（版本號遞增／寫回／產生 exe 版本資訊），
 21 項測 `npcap_install.py`（官網版本解析、官方來源白名單、假下載串流/完整性、Authenticode 判斷與一站式流程），
 21 項測 WinDivert 免 Npcap 後端（純 Python IP 解析、IPv6 位址文字化、BPF 子集轉譯、假 handle 的 SNIFF/保底回注、DLT_RAW pcap 往返），
-與 8 項測 GUI（假 tkinter 檢查 ttk 選項/封包列表增量裁剪，真 Tk 開主視窗煙霧測試），合計 104 項。
+與 11 項測 GUI（假 tkinter 檢查 ttk 選項/封包列表增量裁剪/擷取非同步啟動、失敗還原與中斷偵測，真 Tk 開主視窗煙霧測試），合計 107 項。
 
 ---
 
@@ -308,7 +308,8 @@ python tools/version.py pyinstaller-version     :: 印出 PyInstaller 用的 ver
 4. **驅動與相容性**：層級 5 載入 WinDivert 第三方簽章驅動，老舊簽章可能被新版 Windows
    安全功能封鎖（見 FAQ），封鎖系統防火牆功能仍不受影響。
 5. **效能**：高速流量下封包列表最多保留 10,000 筆，達到上限後只會
-   增量移除最舊的列（不會整表重建）；長時間擷取/攔截請縮小過濾範圍，
+   增量移除最舊的列（不會整表重建）；「開始擷取」在背景緒程開啟後端
+   （含等驅動就緒），介面不會因此凍結；長時間擷取/攔截請縮小過濾範圍，
    避免讓全部流量都流經 Python。
 
 ---

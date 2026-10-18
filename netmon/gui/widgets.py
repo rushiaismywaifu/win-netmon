@@ -164,8 +164,10 @@ def make_tree(parent, columns: list[tuple[str, str, int, str]],
     tree = ttk.Treeview(frame, columns=ids, show="headings", height=height,
                         selectmode="browse")
     for col_id, title, width, anchor in columns:
-        cmd = (lambda c=col_id: on_sort(c)) if on_sort else None
-        tree.heading(col_id, text=title, command=cmd)
+        if on_sort is not None:
+            tree.heading(col_id, text=title, command=lambda c=col_id: on_sort(c))
+        else:
+            tree.heading(col_id, text=title)
         tree.column(col_id, width=width, anchor=anchor, stretch=True)  # type: ignore[arg-type]
     vsb = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
     hsb = ttk.Scrollbar(frame, orient="horizontal", command=tree.xview)
